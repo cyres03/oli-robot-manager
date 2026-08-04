@@ -1,9 +1,24 @@
 # Oli Robot Manager GitHub 协作说明
 
+## 0. 仓库信息
+
+| 项目 | 内容 |
+|------|------|
+| 仓库名称 | `cyres03/oli-robot-manager` |
+| 仓库地址 | [https://github.com/cyres03/oli-robot-manager](https://github.com/cyres03/oli-robot-manager) |
+| 可见性 | Private，仅受邀成员可访问 |
+| 负责人 | `cyres03` |
+| 默认分支 | `main` |
+| 基线提交 | `5127507`，提交邮箱 `1641650362@qq.com` |
+
+仓库已于 2026-08-04 完成首次上传，远程 `main` 已包含基线提交 `5127507`。当前开发电脑因无法连接 `github.com:443`，使用 GitHub 官方 SSH 备用入口 `ssh.github.com:443` 推送；这不影响同事在正常网络下使用 HTTPS。
+
+---
+
 ## 1. 仓库负责人邀请同事
 
 1. 请同事提供 **GitHub 用户名**，不是邮箱或昵称。
-2. 打开 GitHub 仓库页面。
+2. 打开 [Oli Robot Manager 私有仓库](https://github.com/cyres03/oli-robot-manager)。
 3. 进入 `Settings` -> `Collaborators` -> `Add people`。
 4. 输入同事的 GitHub 用户名并发送邀请。
 5. 同事需要在 GitHub 通知或邮箱中接受邀请，之后才能访问私有仓库。
@@ -14,12 +29,21 @@
 
 ## 2. 同事首次获取源码
 
-先安装 Git，然后在 GitHub 仓库页面点击 `Code`，复制 HTTPS 地址：
+先安装 Git，然后使用仓库 HTTPS 地址：
 
 ```powershell
-git clone <仓库HTTPS地址>
+git clone https://github.com/cyres03/oli-robot-manager.git
 cd oli-robot-manager
 ```
+
+如果当前网络无法连接 `github.com:443`，可以使用 GitHub 官方 SSH 443 备用入口。先把自己的 SSH 公钥添加到 GitHub 账号，再克隆：
+
+```powershell
+git clone ssh://git@ssh.github.com:443/cyres03/oli-robot-manager.git
+cd oli-robot-manager
+```
+
+不要共享仓库负责人的 SSH 私钥；每位开发者使用自己的 GitHub 账号和 SSH 密钥。
 
 每位开发者应使用自己的姓名和 GitHub 已验证邮箱：
 
@@ -50,6 +74,8 @@ python main.py
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\setup_backlash_resource.ps1
 ```
+
+`resources/backlash/backlash_install.zip` 约 113.7 MB，超过 GitHub 普通仓库 100 MB 单文件上限，因此不进入 Git 历史，而是通过私有 Release `backlash-resource-v1` 分发。
 
 ---
 

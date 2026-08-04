@@ -4,6 +4,24 @@ Oli Robot Manager 是面向机器人售后、入库和交付验收的 PyQt6 桌�
 
 当前仓库为公司内部协作项目，正在现有 Oli 机器人基础上扩展第二款机器人适配。
 
+## 仓库信息
+
+| 项目 | 内容 |
+|------|------|
+| 私有仓库 | [cyres03/oli-robot-manager](https://github.com/cyres03/oli-robot-manager) |
+| 仓库负责人 | `cyres03` |
+| 默认分支 | `main` |
+| 源码基线 | `5127507`（2026-08-04） |
+
+首次获取源码：
+
+```powershell
+git clone https://github.com/cyres03/oli-robot-manager.git
+cd oli-robot-manager
+```
+
+仓库为私有仓库，必须先由负责人添加为 Collaborator 并接受邀请。
+
 ## 快速开始
 
 ```powershell
