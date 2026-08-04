@@ -42,6 +42,8 @@ python main.py
 powershell -ExecutionPolicy Bypass -File .\scripts\setup_backlash_resource.ps1
 ```
 
+资源来源：[Backlash Runtime Resource v1](https://github.com/cyres03/oli-robot-manager/releases/tag/backlash-resource-v1)，附件约 113.7 MB。
+
 ## 主要文档
 
 - [项目源码交接与二次开发说明](项目源码交接与二次开发说明.md)

@@ -25,6 +25,12 @@
 
 机器人密码不要写进邀请消息或 GitHub Issue，应通过公司内部私聊单独发送。
 
+邀请状态为 `Pending` 时，即使已经设置 `Write` 权限，同事仍不能读取仓库。受邀人可以登录自己的 GitHub 账号后打开：
+
+```text
+https://github.com/cyres03/oli-robot-manager/invitations
+```
+
 ---
 
 ## 2. 同事首次获取源码
@@ -38,12 +44,23 @@ cd oli-robot-manager
 
 如果当前网络无法连接 `github.com:443`，可以使用 GitHub 官方 SSH 443 备用入口。先把自己的 SSH 公钥添加到 GitHub 账号，再克隆：
 
+1. 打开 `https://github.com/settings/ssh/new`
+2. Title 填自己的电脑名称
+3. Key type 选择 `Authentication Key`
+4. 粘贴以 `ssh-ed25519` 开头的公钥并保存
+
 ```powershell
 git clone ssh://git@ssh.github.com:443/cyres03/oli-robot-manager.git
 cd oli-robot-manager
 ```
 
-不要共享仓库负责人的 SSH 私钥；每位开发者使用自己的 GitHub 账号和 SSH 密钥。
+首次连接时，仅当 GitHub Ed25519 主机指纹如下时确认：
+
+```text
+SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU
+```
+
+SSH 公钥应添加到公钥所有者自己的 GitHub 账号，不要添加为仓库 Deploy Key。负责人不能代替协作者把个人公钥添加到其账号。不要共享任何人的 SSH 私钥；每位开发者使用自己的 GitHub 账号和 SSH 密钥。
 
 每位开发者应使用自己的姓名和 GitHub 已验证邮箱：
 
@@ -75,7 +92,13 @@ python main.py
 powershell -ExecutionPolicy Bypass -File .\scripts\setup_backlash_resource.ps1
 ```
 
-`resources/backlash/backlash_install.zip` 约 113.7 MB，超过 GitHub 普通仓库 100 MB 单文件上限，因此不进入 Git 历史，而是通过私有 Release `backlash-resource-v1` 分发。
+`resources/backlash/backlash_install.zip` 约 113.7 MB，超过 GitHub 普通仓库 100 MB 单文件上限，因此不进入 Git 历史，而是通过私有 Release [Backlash Runtime Resource v1](https://github.com/cyres03/oli-robot-manager/releases/tag/backlash-resource-v1) 分发。
+
+附件完整性：
+
+```text
+SHA-256: BACC27196221226AFE5339F3A47C9E492C565327DA0E454A7B223370E32A58EE
+```
 
 ---
 

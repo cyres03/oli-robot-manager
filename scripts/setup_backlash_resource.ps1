@@ -1,5 +1,6 @@
 param(
-    [string]$Tag = "backlash-resource-v1"
+    [string]$Tag = "backlash-resource-v1",
+    [string]$Repository = "cyres03/oli-robot-manager"
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +21,7 @@ New-Item -ItemType Directory -Path $resourceDirectory -Force | Out-Null
 Push-Location $projectRoot
 try {
     gh release download $Tag `
+        --repo $Repository `
         --pattern "backlash_install.zip" `
         --dir $resourceDirectory `
         --clobber
