@@ -1,0 +1,8 @@
+{
+  "main_control_passwords": [
+    "replace-with-main-control-password"
+  ],
+  "perception_password": "replace-with-perception-password",
+  "wifi_password": "replace-with-robot-wifi-password",
+  "router_admin_password": "replace-with-router-admin-password"
+}

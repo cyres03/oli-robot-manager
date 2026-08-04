@@ -1,0 +1,30 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build and release output
+build/
+dist/
+release_packages/
+installer/Output/
+*.log
+
+# Runtime payload distributed as a private GitHub Release asset
+resources/backlash/backlash_install.zip
+
+# Local configuration and credentials
+config.local.json
+.env
+.env.*
+!.env.example
+
+# Editor and OS state
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

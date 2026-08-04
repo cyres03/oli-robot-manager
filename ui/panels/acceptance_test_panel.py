@@ -1,0 +1,699 @@
+"""Acceptance testing workbench for WiFi/SSH-based after-sales checks."""
+import os
+import re
+import time
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from statistics import median
+from urllib.parse import urljoin
+
+import httpx
+from PyQt6.QtCore import QThread, Qt, pyqtSignal
+from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+from config import ROBOT_CONFIG
+from network.wifi_manager import WifiManager
+from ui.panels.log_analyzer_panel import LogAnalyzerPanel
+from ui.panels.power_cycle_panel import PowerCyclePanel
+from workers.ssh_worker import SshWorker
+
+
+BEIJING_TIMEZONE = timezone(timedelta(hours=8))
+TIME_TOLERANCE_SECONDS = 60
+TIME_SOURCE_MAX_DIFFERENCE_SECONDS = 15
+TIME_SOURCE_URLS = (
+    "https://www.baidu.com/",
+    "https://www.microsoft.com/",
+)
+TIME_CHECK_COMMAND = (
+    "date '+TIME=%Y-%m-%d %H:%M:%S %z'; "
+    "printf 'ZONE='; timedatectl show -p Timezone --value"
+)
+
+
+def _fetch_network_beijing_time() -> tuple[datetime, float]:
+    samples: list[tuple[datetime, float]] = []
+    errors = []
+    for source_url in TIME_SOURCE_URLS:
+        try:
+            response = httpx.get(
+                f"{source_url}?oli_time_check={uuid.uuid4().hex}",
+                timeout=6.0,
+                follow_redirects=True,
+                headers={"Cache-Control": "no-cache"},
+            )
+            response.raise_for_status()
+            date_header = response.headers.get("date")
+            if not date_header:
+                raise ValueError("响应缺少 Date 头")
+            source_time = parsedate_to_datetime(date_header)
+            if source_time.tzinfo is None:
+                source_time = source_time.replace(tzinfo=timezone.utc)
+            samples.append((source_time.astimezone(timezone.utc), time.monotonic()))
+        except Exception as error:
+            errors.append(f"{source_url}: {error}")
+
+    if not samples:
+        raise RuntimeError("；".join(errors) or "无可用网络时间源")
+
+    reference_tick = max(received_tick for _, received_tick in samples)
+    adjusted_samples = [
+        source_time + timedelta(seconds=reference_tick - received_tick)
+        for source_time, received_tick in samples
+    ]
+    source_difference = (max(adjusted_samples) - min(adjusted_samples)).total_seconds()
+    if source_difference > TIME_SOURCE_MAX_DIFFERENCE_SECONDS:
+        raise RuntimeError(f"网络时间源相差 {source_difference:.0f} 秒")
+
+    reference_timestamp = median(sample.timestamp() for sample in adjusted_samples)
+    reference_time = datetime.fromtimestamp(reference_timestamp, timezone.utc).astimezone(BEIJING_TIMEZONE)
+    return reference_time, reference_tick
+
+
+def _current_reference_time(reference: tuple[datetime, float]) -> datetime:
+    reference_time, reference_tick = reference
+    elapsed = max(0.0, time.monotonic() - reference_tick)
+    return reference_time + timedelta(seconds=elapsed)
+
+
+def _evaluate_time_output(
+    output: str,
+    device_name: str,
+    current_beijing_time: datetime,
+) -> tuple[bool, str]:
+    time_match = re.search(r"^TIME=(.+)$", output, flags=re.MULTILINE)
+    zone_match = re.search(r"^ZONE=(.*)$", output, flags=re.MULTILINE)
+    if not time_match or not zone_match:
+        return False, f"无法读取{device_name}时间或时区"
+
+    try:
+        robot_time = datetime.strptime(time_match.group(1).strip(), "%Y-%m-%d %H:%M:%S %z")
+    except ValueError:
+        return False, f"{device_name}时间格式异常"
+
+    beijing_now = current_beijing_time
+    if beijing_now.tzinfo is None:
+        beijing_now = beijing_now.replace(tzinfo=BEIJING_TIMEZONE)
+    else:
+        beijing_now = beijing_now.astimezone(BEIJING_TIMEZONE)
+
+    timezone_name = zone_match.group(1).strip()
+    difference = abs((robot_time - beijing_now).total_seconds())
+    passed = timezone_name == "Asia/Shanghai" and difference < TIME_TOLERANCE_SECONDS
+    summary = (
+        f"{device_name} {robot_time.astimezone(BEIJING_TIMEZONE):%Y-%m-%d %H:%M:%S}，"
+        f"北京时间 {beijing_now:%Y-%m-%d %H:%M:%S}，"
+        f"偏差 {difference:.0f} 秒，时区 {timezone_name or '未知'}"
+    )
+    return passed, summary
+
+
+@dataclass(frozen=True)
+class AcceptanceCheck:
+    key: str
+    category: str
+    name: str
+    tool: str
+    kind: str
+    target: str = ""
+    command: str = ""
+    url: str = ""
+
+
+class BeijingTimeWorker(QThread):
+    time_ready = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def run(self):
+        try:
+            self.time_ready.emit(_fetch_network_beijing_time())
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
+class HttpCheckWorker(QThread):
+    finished = pyqtSignal(int, str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, url: str, parent=None):
+        super().__init__(parent)
+        self.url = url
+
+    def run(self):
+        try:
+            response = httpx.get(self.url, timeout=4.0, follow_redirects=True)
+            self.finished.emit(response.status_code, response.text[:800])
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
+class RobotInfoWorker(QThread):
+    finished = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def run(self):
+        try:
+            response = httpx.get("http://10.192.1.2:8080/get_robot_info", timeout=6.0)
+            response.raise_for_status()
+            self.finished.emit(response.json())
+        except Exception:
+            try:
+                response = httpx.get("http://10.192.1.2:8080/get_local_version", timeout=6.0)
+                response.raise_for_status()
+                self.finished.emit(response.json())
+            except Exception as error:
+                self.failed.emit(str(error))
+
+
+class LogListWorker(QThread):
+    finished = pyqtSignal(list)
+    failed = pyqtSignal(str)
+
+    def run(self):
+        try:
+            response = httpx.get("http://10.192.1.2:8090/log/", timeout=8.0, follow_redirects=True)
+            response.raise_for_status()
+            names = sorted(set(re.findall(r'href="([^"]+\.log(?:\.active)?)"', response.text)))
+            self.finished.emit(names)
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
+class LogDownloadWorker(QThread):
+    finished = pyqtSignal(str, str, str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, log_name: str, parent=None):
+        super().__init__(parent)
+        self.log_name = log_name
+
+    def run(self):
+        try:
+            url = urljoin("http://10.192.1.2:8090/log/", self.log_name)
+            response = httpx.get(url, timeout=30.0, follow_redirects=True)
+            response.raise_for_status()
+            content = response.text
+            save_dir = os.path.join(os.path.expanduser("~"), "AppData", "Local", "OliRobotManager", "logs")
+            os.makedirs(save_dir, exist_ok=True)
+            save_path = os.path.join(save_dir, self.log_name)
+            with open(save_path, "w", encoding="utf-8", errors="ignore") as file_handle:
+                file_handle.write(content)
+            self.finished.emit(self.log_name, save_path, content)
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
+class AcceptanceTestPanel(QWidget):
+    log_message = pyqtSignal(str, str)
+
+    CHECKS = [
+        AcceptanceCheck("wifi", "网络", "机器人 WiFi 识别", "本机 WiFi", "local"),
+        AcceptanceCheck("portal", "网络", "机器人信息页 8080", "HTTP", "http", url="http://10.192.1.2:8080"),
+        AcceptanceCheck("logs", "网络", "日志页面 8090", "HTTP", "http", url="http://10.192.1.2:8090"),
+        AcceptanceCheck("mcp", "网络", "MCP 服务 18080", "HTTP", "http", url="http://10.192.1.2:18080/mcp"),
+        AcceptanceCheck("main_ssh", "SSH", "主控 SSH 登录", "limx@10.192.1.2", "ssh", target="main", command="hostname; uname -a"),
+        AcceptanceCheck("perception_ssh", "SSH", "感知 SSH 登录", "guest@10.192.1.3", "ssh", target="perception", command="hostname; uname -a"),
+        AcceptanceCheck("main_time", "主控", "主控系统时间", "limx@10.192.1.2", "ssh", target="main", command=TIME_CHECK_COMMAND),
+        AcceptanceCheck("perception_time", "感知", "感知系统时间", "guest@10.192.1.3", "ssh", target="perception", command=TIME_CHECK_COMMAND),
+        AcceptanceCheck("main_disk", "主控", "主控磁盘空间", "SSH", "ssh", target="main", command="df -h /"),
+        AcceptanceCheck("main_process", "主控", "主控机器人进程", "SSH", "ssh", target="main", command="ps -eo comm,args | grep -E 'limx|robot|mros' | grep -v grep | head -30"),
+        AcceptanceCheck("cpu", "感知", "感知 CPU 核心数", "SSH", "ssh", target="perception", command="nproc"),
+        AcceptanceCheck("camera", "感知", "3D/双目相机 USB", "SSH", "ssh", target="perception", command="lsusb -t 2>&1; echo '---'; lsusb 2>&1"),
+        AcceptanceCheck("imu", "主控", "IMU 频率", "SSH", "ssh", target="main", command="bash -c 'source /opt/limx/install/setup.bash && export MROS_IP_LIST=10.192.1.x && timeout --signal=KILL 8s /opt/limx/install/bin/mrostopic hz /ImuData' 2>&1"),
+    ]
+
+    def __init__(self, power_cycle_service=None, parent=None):
+        super().__init__(parent)
+        self._power_cycle_service = power_cycle_service
+        self._workers: list[QThread] = []
+        self._pending: list[int] = []
+        self._running_index: int | None = None
+        self._build_ui()
+        self._populate_checks()
+
+    def _build_ui(self):
+        self.setStyleSheet(
+            "QWidget#acceptancePanel { background: #F8F9FA; }"
+            "QLabel#title { font-size: 20px; font-weight: 700; color: #1D2129; background: transparent; }"
+            "QLabel#desc { color: #86909C; font-size: 13px; background: transparent; }"
+            "QPushButton { background: #FFFFFF; color: #1D2129; border: 1px solid #E5E6EB; border-radius: 6px; padding: 8px 14px; }"
+            "QPushButton:hover { background: #F2F3F5; border-color: #C9CDD4; }"
+            "QPushButton#primaryBtn { background: #6C5CE7; color: #FFFFFF; border: none; font-weight: 700; }"
+            "QPushButton#primaryBtn:hover { background: #5A4BD1; }"
+            "QTableWidget { background: #FFFFFF; border: 1px solid #E5E6EB; border-radius: 8px; gridline-color: #E5E6EB; }"
+            "QHeaderView::section { background: #F2F3F5; color: #4E5969; border: none; padding: 7px; font-weight: 700; }"
+            "QTextEdit { background: #F7F8FA; border: 1px solid #E5E6EB; border-radius: 8px; font-family: Consolas, 'Courier New', monospace; font-size: 12px; }"
+        )
+        self.setObjectName("acceptancePanel")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(10)
+
+        title = QLabel("售后验收测试工作台")
+        title.setObjectName("title")
+        layout.addWidget(title)
+        desc = QLabel("集中执行可通过 WiFi / SSH 自动判断的验收项，并内嵌机器人日志分析。")
+        desc.setObjectName("desc")
+        layout.addWidget(desc)
+
+        top_tools = QGridLayout()
+        top_tools.setHorizontalSpacing(8)
+        top_tools.setVerticalSpacing(8)
+
+        self.version_labels = {}
+        for index, (key, label) in enumerate([
+            ("software_version", "主控软件版本"),
+            ("pms_version", "分电板版本"),
+            ("ecm_version", "主站板版本"),
+            ("motor_version", "驱动器版本"),
+        ]):
+            label_widget = QLabel(label)
+            label_widget.setStyleSheet("color: #86909C; background: transparent;")
+            value_widget = QLabel("-")
+            value_widget.setStyleSheet("color: #1D2129; font-weight: 700; background: #FFFFFF; border: 1px solid #E5E6EB; border-radius: 6px; padding: 7px 10px;")
+            self.version_labels[key] = value_widget
+            top_tools.addWidget(label_widget, 0, index)
+            top_tools.addWidget(value_widget, 1, index)
+
+        refresh_versions_btn = QPushButton("刷新 8080 版本")
+        refresh_versions_btn.clicked.connect(self.refresh_robot_versions)
+        top_tools.addWidget(refresh_versions_btn, 1, 4)
+
+        self.log_combo = QComboBox()
+        self.log_combo.setMinimumWidth(230)
+        self.log_combo.setStyleSheet("background: #FFFFFF; border: 1px solid #E5E6EB; border-radius: 6px; padding: 6px 10px;")
+        top_tools.addWidget(QLabel("8090 日志"), 2, 0)
+        top_tools.addWidget(self.log_combo, 3, 0, 1, 2)
+        refresh_logs_btn = QPushButton("刷新日志列表")
+        refresh_logs_btn.clicked.connect(self.refresh_log_list)
+        top_tools.addWidget(refresh_logs_btn, 3, 2)
+        download_log_btn = QPushButton("下载并分析")
+        download_log_btn.setObjectName("primaryBtn")
+        download_log_btn.clicked.connect(self.download_selected_log)
+        top_tools.addWidget(download_log_btn, 3, 3)
+        self.log_status = QLabel("未加载日志列表")
+        self.log_status.setStyleSheet("color: #86909C; background: transparent;")
+        top_tools.addWidget(self.log_status, 3, 4)
+        layout.addLayout(top_tools)
+
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs, 1)
+
+        self.auto_tab = QWidget()
+        auto_layout = QVBoxLayout(self.auto_tab)
+        auto_layout.setContentsMargins(0, 10, 0, 0)
+        auto_layout.setSpacing(8)
+
+        button_bar = QHBoxLayout()
+        self.run_all_btn = QPushButton("运行全部自动检查")
+        self.run_all_btn.setObjectName("primaryBtn")
+        self.run_all_btn.clicked.connect(self.run_all_checks)
+        button_bar.addWidget(self.run_all_btn)
+
+        self.run_selected_btn = QPushButton("运行选中项")
+        self.run_selected_btn.clicked.connect(self.run_selected_check)
+        button_bar.addWidget(self.run_selected_btn)
+        button_bar.addStretch()
+
+        self.summary_label = QLabel("就绪")
+        self.summary_label.setStyleSheet("color: #4E5969; background: transparent;")
+        button_bar.addWidget(self.summary_label)
+        auto_layout.addLayout(button_bar)
+
+        self.check_table = QTableWidget(0, 6)
+        self.check_table.setHorizontalHeaderLabels(["模块", "测试项", "工具/目标", "状态", "摘要", "时间"])
+        self.check_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.check_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.check_table.verticalHeader().setVisible(False)
+        self.check_table.horizontalHeader().setStretchLastSection(True)
+        self.check_table.setColumnWidth(0, 72)
+        self.check_table.setColumnWidth(1, 170)
+        self.check_table.setColumnWidth(2, 150)
+        self.check_table.setColumnWidth(3, 76)
+        self.check_table.setColumnWidth(4, 430)
+        auto_layout.addWidget(self.check_table, 1)
+
+        self.detail_view = QTextEdit()
+        self.detail_view.setReadOnly(True)
+        self.detail_view.setMaximumHeight(130)
+        auto_layout.addWidget(self.detail_view)
+
+        self.tabs.addTab(self.auto_tab, "自动验收")
+        self.log_analyzer = LogAnalyzerPanel()
+        self.tabs.addTab(self.log_analyzer, "日志分析")
+        if self._power_cycle_service is not None:
+            self.power_cycle_tab = PowerCyclePanel(self._power_cycle_service)
+            self.tabs.addTab(self.power_cycle_tab, "断电恢复")
+
+    def _populate_checks(self):
+        self.check_table.setRowCount(len(self.CHECKS))
+        for row_index, check in enumerate(self.CHECKS):
+            values = [check.category, check.name, check.tool, "待执行", "", ""]
+            for column_index, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column_index == 3:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.check_table.setItem(row_index, column_index, item)
+
+    def run_all_checks(self):
+        self._pending = list(range(len(self.CHECKS)))
+        self._set_running(True)
+        self.detail_view.clear()
+        self._append_detail("开始运行自动验收检查...")
+        self._run_next_check()
+
+    def refresh_robot_versions(self):
+        self._append_detail("正在从 8080 manager 读取版本信息...")
+        worker = RobotInfoWorker(self)
+        worker.finished.connect(self._on_robot_info_loaded)
+        worker.failed.connect(lambda error: self._append_detail(f"读取 8080 版本失败: {error}"))
+        self._workers.append(worker)
+        worker.start()
+
+    def _on_robot_info_loaded(self, info: dict):
+        fields = {
+            "software_version": "software_version",
+            "pms_version": "pms_version",
+            "ecm_version": "ecm_version",
+            "motor_version": "motor_version",
+        }
+        for label_key, info_key in fields.items():
+            value = str(info.get(info_key, "-")).strip() or "-"
+            if label_key == "motor_version":
+                value = self._summarize_motor_versions(value)
+            self.version_labels[label_key].setText(value)
+        self._append_detail("已从 8080 导入版本信息。")
+        self.log_message.emit("[验收] 已导入 8080 版本信息", "pass")
+
+    def _summarize_motor_versions(self, raw_value: str) -> str:
+        pairs = re.findall(r"(\d+)\s*[:：]\s*([0-9A-Za-z._-]+)", raw_value)
+        if not pairs:
+            return raw_value[:97] + "..." if len(raw_value) > 100 else raw_value
+
+        versions: dict[str, list[str]] = {}
+        for motor_id, version in pairs:
+            versions.setdefault(version, []).append(motor_id)
+
+        if len(versions) == 1:
+            version, motor_ids = next(iter(versions.items()))
+            return f"全部 {version}（共 {len(motor_ids)} 个驱动器）"
+
+        majority_version, majority_motors = max(versions.items(), key=lambda item: len(item[1]))
+        different = []
+        for version, motor_ids in versions.items():
+            if version != majority_version:
+                different.append(f"{','.join(motor_ids)}: {version}")
+        return f"多数 {majority_version}（{len(majority_motors)} 个）；差异 {'; '.join(different)}"
+
+    def refresh_log_list(self):
+        self.log_status.setText("正在读取 8090 日志列表...")
+        worker = LogListWorker(self)
+        worker.finished.connect(self._on_log_list_loaded)
+        worker.failed.connect(lambda error: self.log_status.setText(f"读取失败: {error}"))
+        self._workers.append(worker)
+        worker.start()
+
+    def _on_log_list_loaded(self, log_names: list[str]):
+        self.log_combo.clear()
+        for log_name in log_names:
+            self.log_combo.addItem(log_name)
+        if log_names:
+            self.log_combo.setCurrentIndex(len(log_names) - 1)
+        self.log_status.setText(f"已加载 {len(log_names)} 个日志")
+        self.log_message.emit(f"[验收] 8090 日志列表: {len(log_names)} 个", "info")
+
+    def download_selected_log(self):
+        log_name = self.log_combo.currentText().strip()
+        if not log_name:
+            self.log_status.setText("请先刷新并选择日志")
+            return
+        self.log_status.setText(f"正在下载 {log_name}...")
+        worker = LogDownloadWorker(log_name, self)
+        worker.finished.connect(self._on_log_downloaded)
+        worker.failed.connect(lambda error: self.log_status.setText(f"下载失败: {error}"))
+        self._workers.append(worker)
+        worker.start()
+
+    def _on_log_downloaded(self, log_name: str, save_path: str, content: str):
+        self.log_status.setText(f"已下载: {save_path}")
+        self.log_analyzer.analyze_text(content, save_path)
+        self.tabs.setCurrentWidget(self.log_analyzer)
+        self.log_message.emit(f"[日志] 已下载并分析 {log_name}", "pass")
+
+    def run_selected_check(self):
+        selected = self.check_table.currentRow()
+        if selected < 0:
+            return
+        self._pending = [selected]
+        self._set_running(True)
+        self.detail_view.clear()
+        self._run_next_check()
+
+    def _run_next_check(self):
+        if not self._pending:
+            self._running_index = None
+            self._set_running(False)
+            self._update_summary()
+            self.log_message.emit("[验收] 自动检查完成", "pass")
+            return
+
+        row_index = self._pending.pop(0)
+        self._running_index = row_index
+        check = self.CHECKS[row_index]
+        self._set_row(row_index, "执行中", "正在检查...", "")
+        self.log_message.emit(f"[验收] {check.name}", "command")
+
+        if check.kind == "local":
+            self._run_local_check(row_index, check)
+        elif check.kind == "http":
+            self._run_http_check(row_index, check)
+        elif check.kind == "ssh":
+            self._run_ssh_check(row_index, check)
+
+    def _run_local_check(self, row_index: int, check: AcceptanceCheck):
+        if check.key == "wifi":
+            ssid = WifiManager.get_robot_ssid() or WifiManager.get_current_ssid() or "未连接"
+            passed = WifiManager.is_robot_wifi()
+            summary = f"当前 WiFi: {ssid}"
+            self._finish_check(row_index, passed, summary, summary)
+            return
+        self._finish_check(row_index, False, "未知本地检查", "")
+
+    def _run_http_check(self, row_index: int, check: AcceptanceCheck):
+        worker = HttpCheckWorker(check.url, self)
+        worker.finished.connect(lambda status_code, body, current_row=row_index, current_check=check: self._on_http_done(current_row, current_check, status_code, body))
+        worker.failed.connect(lambda error, current_row=row_index: self._finish_check(current_row, False, error, error))
+        self._workers.append(worker)
+        worker.start()
+
+    def _on_http_done(self, row_index: int, check: AcceptanceCheck, status_code: int, body: str):
+        passed = 200 <= status_code < 500
+        if check.key == "portal":
+            passed = status_code == 200 and ("LimX Robot Manager" in body or "get_robot_info" in body)
+        summary = f"HTTP {status_code}"
+        detail = body.strip()[:600] or summary
+        self._finish_check(row_index, passed, summary, detail)
+
+    def _run_ssh_check(self, row_index: int, check: AcceptanceCheck):
+        worker = self._create_ssh_worker(check.target)
+        worker.set_command(check.command)
+        worker.command_finished.connect(lambda exit_code, current_row=row_index, current_check=check, current_worker=worker: self._on_ssh_done(current_row, current_check, exit_code, current_worker.collected_output))
+        worker.error_occurred.connect(lambda error, current_row=row_index: self._finish_check(current_row, False, error, error))
+        self._workers.append(worker)
+        worker.start()
+
+    def _create_ssh_worker(self, target: str) -> SshWorker:
+        if target == "main":
+            return SshWorker(ROBOT_CONFIG.main_control_ip, ROBOT_CONFIG.main_control_user, list(ROBOT_CONFIG.main_control_passwords), self)
+        return SshWorker(ROBOT_CONFIG.perception_ip, ROBOT_CONFIG.perception_user, [ROBOT_CONFIG.perception_password], self)
+
+    def _on_ssh_done(self, row_index: int, check: AcceptanceCheck, exit_code: int, output: str):
+        if check.key in {"main_time", "perception_time"}:
+            self._request_beijing_time(row_index, check, output, verification=False)
+            return
+        passed, summary = self._evaluate_ssh_output(check, output)
+        self._finish_check(row_index, passed, summary, output.strip()[:1200])
+
+    def _request_beijing_time(
+        self,
+        row_index: int,
+        check: AcceptanceCheck,
+        output: str,
+        verification: bool,
+    ):
+        self._set_row(row_index, "执行中", "正在获取可信网络北京时间...", "")
+        worker = BeijingTimeWorker(self)
+        if verification:
+            worker.time_ready.connect(
+                lambda reference, current_row=row_index, current_check=check, current_output=output:
+                self._on_time_verified(current_row, current_check, current_output, reference)
+            )
+            failure_summary = "无法获取可信网络北京时间，校时结果无法复验"
+        else:
+            worker.time_ready.connect(
+                lambda reference, current_row=row_index, current_check=check, current_output=output:
+                self._on_time_checked(current_row, current_check, current_output, reference)
+            )
+            failure_summary = "无法获取可信网络北京时间，未执行自动校时"
+        worker.failed.connect(
+            lambda error, current_row=row_index, summary=failure_summary:
+            self._finish_check(current_row, False, summary, error)
+        )
+        self._workers.append(worker)
+        worker.start()
+
+    def _on_time_checked(
+        self,
+        row_index: int,
+        check: AcceptanceCheck,
+        output: str,
+        reference: tuple[datetime, float],
+    ):
+        beijing_now = _current_reference_time(reference)
+        passed, summary = _evaluate_time_output(output, check.category, beijing_now)
+        if passed:
+            self._finish_check(row_index, True, summary, output.strip()[:1200])
+            return
+
+        self._set_row(row_index, "执行中", f"{summary}，正在自动校时...", "")
+        self._append_detail(f"[校时前] {check.name}\n{output.strip()}\n")
+        beijing_time_text = _current_reference_time(reference).strftime("%Y-%m-%d %H:%M:%S")
+        sudo_command = "sudo -S -p ''" if check.target == "perception" else "sudo"
+        command = (
+            f"{sudo_command} timedatectl set-timezone Asia/Shanghai && "
+            f'{sudo_command} date -s "{beijing_time_text}" && '
+            f"{sudo_command} hwclock --systohc && echo __TIME_FIX_OK__"
+        )
+        worker = self._create_ssh_worker(check.target)
+        worker.set_command(command)
+        if check.target == "perception":
+            worker.set_stdin_text((ROBOT_CONFIG.perception_password + "\n") * 3)
+        worker.command_finished.connect(
+            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker:
+            self._on_time_fixed(current_row, current_check, current_worker.collected_output)
+        )
+        worker.error_occurred.connect(
+            lambda error, current_row=row_index:
+            self._finish_check(current_row, False, f"自动校时 SSH 失败: {error}", error)
+        )
+        self._workers.append(worker)
+        worker.start()
+
+    def _on_time_fixed(self, row_index: int, check: AcceptanceCheck, output: str):
+        if "__TIME_FIX_OK__" not in output:
+            detail = output.strip() or "校时命令未返回成功标记"
+            self._finish_check(row_index, False, "自动校时失败", detail)
+            return
+
+        self._append_detail(f"[自动校时] {check.name}\n{output.strip()}\n")
+        worker = self._create_ssh_worker(check.target)
+        worker.set_command(TIME_CHECK_COMMAND)
+        worker.command_finished.connect(
+            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker:
+            self._request_beijing_time(
+                current_row,
+                current_check,
+                current_worker.collected_output,
+                verification=True,
+            )
+        )
+        worker.error_occurred.connect(
+            lambda error, current_row=row_index:
+            self._finish_check(current_row, False, f"校时复验 SSH 失败: {error}", error)
+        )
+        self._workers.append(worker)
+        worker.start()
+
+    def _on_time_verified(
+        self,
+        row_index: int,
+        check: AcceptanceCheck,
+        output: str,
+        reference: tuple[datetime, float],
+    ):
+        passed, summary = _evaluate_time_output(
+            output,
+            check.category,
+            _current_reference_time(reference),
+        )
+        detail = f"[校时复验]\n{output.strip()}"
+        if passed:
+            summary = f"自动校时成功；{summary}"
+        else:
+            summary = f"自动校时后仍不一致；{summary}"
+        self._finish_check(row_index, passed, summary, detail)
+
+    def _evaluate_ssh_output(self, check: AcceptanceCheck, output: str) -> tuple[bool, str]:
+        stripped = output.strip()
+        if not stripped:
+            return False, "无输出"
+        if check.key in {"main_ssh", "perception_ssh"}:
+            return True, stripped.splitlines()[0]
+        if check.key == "cpu":
+            cores = int(stripped) if stripped.isdigit() else 0
+            return cores == ROBOT_CONFIG.expected_cpu_cores, f"检测到 {cores} 核，期望 {ROBOT_CONFIG.expected_cpu_cores} 核"
+        if check.key == "camera":
+            lower_output = stripped.lower()
+            has_camera = any(keyword in lower_output for keyword in ("camera", "realsense", "imaging", "video"))
+            has_usb3 = "5000" in stripped or "5000M" in stripped
+            return has_camera and has_usb3, f"相机={'是' if has_camera else '否'}，USB3={'是' if has_usb3 else '否'}"
+        if check.key == "imu":
+            import re
+            matches = re.findall(r"average rate:\s*([\d.]+)", stripped)
+            frequency = float(matches[-1]) if matches else 0.0
+            passed = abs(frequency - ROBOT_CONFIG.expected_imu_hz) <= ROBOT_CONFIG.imu_tolerance_hz
+            return passed, f"IMU {frequency:.1f}Hz，期望 {ROBOT_CONFIG.expected_imu_hz:.0f}Hz"
+        if check.key == "main_disk":
+            return "%" in stripped, stripped.splitlines()[-1] if stripped.splitlines() else "已读取磁盘"
+        return True, stripped.splitlines()[0]
+
+    def _finish_check(self, row_index: int, passed: bool, summary: str, detail: str):
+        status = "PASS" if passed else "FAIL"
+        self._set_row(row_index, status, summary, datetime.now().strftime("%H:%M:%S"))
+        self._append_detail(f"[{status}] {self.CHECKS[row_index].name}\n{detail}\n")
+        self.log_message.emit(f"[验收] {self.CHECKS[row_index].name}: {status}", "pass" if passed else "error")
+        self._run_next_check()
+
+    def _set_row(self, row_index: int, status: str, summary: str, time_text: str):
+        self.check_table.item(row_index, 3).setText(status)
+        self.check_table.item(row_index, 4).setText(summary)
+        self.check_table.item(row_index, 5).setText(time_text)
+        status_item = self.check_table.item(row_index, 3)
+        color_map = {"PASS": "#00B42A", "FAIL": "#F53F3F", "执行中": "#FF7D00", "待执行": "#86909C"}
+        status_item.setForeground(Qt.GlobalColor.black)
+        status_item.setBackground(QColor(color_map.get(status, "#F2F3F5")))
+
+    def _append_detail(self, text: str):
+        self.detail_view.append(text)
+
+    def _set_running(self, running: bool):
+        self.run_all_btn.setEnabled(not running)
+        self.run_selected_btn.setEnabled(not running)
+        self.summary_label.setText("执行中..." if running else "就绪")
+
+    def _update_summary(self):
+        passed = 0
+        failed = 0
+        for row_index in range(self.check_table.rowCount()):
+            status = self.check_table.item(row_index, 3).text()
+            if status == "PASS":
+                passed += 1
+            elif status == "FAIL":
+                failed += 1
+        self.summary_label.setText(f"完成：PASS {passed} / FAIL {failed}")
