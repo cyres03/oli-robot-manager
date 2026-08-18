@@ -36,6 +36,9 @@ python main.py
 
 请向仓库负责人单独获取机器人连接参数，填写到 `config.local.json`。该文件已被 Git 忽略，禁止提交凭据。
 
+也可在软件首次提示时输入密码并勾选“记住到系统凭据管理器”。Windows 使用
+Credential Manager，Linux 使用 Secret Service；凭据按机器人隔离，不写入仓库。
+
 如需开发 Backlash 回差检测功能，再执行：
 
 ```powershell

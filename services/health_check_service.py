@@ -33,6 +33,7 @@ class HealthCheckService(QObject):
     step_result = pyqtSignal(HealthCheckState, dict)
     diagnostic_complete = pyqtSignal(HealthCheckResult)
     diagnostic_error = pyqtSignal(str)
+    ssh_authorization_required = pyqtSignal(str, str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -40,11 +41,13 @@ class HealthCheckService(QObject):
         self._result = HealthCheckResult()
         self._retry_count = 0
         self._workers: list = []
+        self._ssh_retry = None
 
     def run_full_diagnostic(self):
         self._result = HealthCheckResult(started_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self._retry_count = 0
         self._workers.clear()
+        self._ssh_retry = None
         self._transition_to(HealthCheckState.CONNECTING_WIFI)
         self._check_wifi()
 
@@ -100,6 +103,7 @@ class HealthCheckService(QObject):
         w.set_command("nproc")
         w.command_finished.connect(lambda ec, worker=w: self._on_cpu_output(ec, worker))
         w.error_occurred.connect(lambda e: self._on_ssh_error("CPU", e))
+        self._watch_ssh_authentication(w, self._check_cpu)
         self._workers.append(w)
         w.start()
 
@@ -135,6 +139,7 @@ class HealthCheckService(QObject):
         w.set_command("sudo rm /boot/dtd/orin_nx_16g.dtb && sudo reboot")
         w.command_finished.connect(lambda ec, worker=w: self._on_fix_done(ec))
         w.error_occurred.connect(lambda e: self._on_ssh_error("FIX_CPU", e))
+        self._watch_ssh_authentication(w, self._fix_cpu)
         self._workers.append(w)
         w.start()
 
@@ -155,6 +160,12 @@ class HealthCheckService(QObject):
         elif self._state == HealthCheckState.FIXING_CPU:
             self._transition_to(HealthCheckState.CHECKING_CAMERA)
             self._check_camera()
+        elif self._state == HealthCheckState.CHECKING_CAMERA:
+            self._result.camera_result = CameraCheckResult(passed=False)
+            self.step_result.emit(HealthCheckState.CHECKING_CAMERA,
+                {"passed": False, "error": error})
+            self._transition_to(HealthCheckState.CHECKING_TIME)
+            self._check_time()
         elif self._state == HealthCheckState.CHECKING_TIME:
             self._result.time_result = TimeCheckResult(passed=False)
             self.step_result.emit(HealthCheckState.CHECKING_TIME,
@@ -170,6 +181,41 @@ class HealthCheckService(QObject):
                 {"passed": False, "error": error})
             self._transition_to(HealthCheckState.COMPLETED)
             self._finish()
+
+    def _watch_ssh_authentication(self, worker: SshWorker, retry):
+        worker.authentication_required.connect(
+            lambda host, username, robot_id: self._on_ssh_authentication_required(
+                host, username, robot_id, retry
+            )
+        )
+
+    def _on_ssh_authentication_required(
+        self, host: str, username: str, robot_id: str, retry
+    ):
+        self._ssh_retry = (robot_id, retry)
+        self.diagnostic_error.emit("当前机器人需要一次 SSH 密码验证")
+        self.ssh_authorization_required.emit(host, username, robot_id)
+
+    def finish_ssh_authorization(self, success: bool, detail: str):
+        pending = self._ssh_retry
+        self._ssh_retry = None
+        if success and pending:
+            robot_id, retry = pending
+            QTimer.singleShot(
+                0, lambda: self._retry_ssh_step(robot_id, retry)
+            )
+            return
+        self._on_ssh_error("AUTHORIZATION", detail)
+
+    def _retry_ssh_step(self, robot_id: str, retry):
+        if ROBOT_CONFIG.ws_accid != robot_id:
+            self._on_ssh_error(
+                "AUTHORIZATION",
+                f"机器人已从 {robot_id} 切换为 {ROBOT_CONFIG.ws_accid}，"
+                "原检查已取消",
+            )
+            return
+        retry()
 
     # ---- Step 2.5: Camera Check ----
 
@@ -188,6 +234,9 @@ class HealthCheckService(QObject):
         w.set_command("lsusb -t 2>&1; echo '---'; lsusb 2>&1")
         w.command_finished.connect(lambda ec, worker=w, a=attempt: self._on_camera_output(ec, worker, a))
         w.error_occurred.connect(lambda e: self._on_ssh_error("CAMERA", e))
+        self._watch_ssh_authentication(
+            w, lambda current_attempt=attempt: self._run_camera_check(current_attempt)
+        )
         self._workers.append(w)
         w.start()
 
@@ -243,6 +292,7 @@ class HealthCheckService(QObject):
         w.set_command("date '+%Y-%m-%d %H:%M:%S'")
         w.command_finished.connect(lambda ec, worker=w: self._on_time_output(ec, worker))
         w.error_occurred.connect(lambda e: self._on_ssh_error("TIME", e))
+        self._watch_ssh_authentication(w, self._check_time)
         self._workers.append(w)
         w.start()
 
@@ -293,6 +343,7 @@ class HealthCheckService(QObject):
         w.set_command(commands)
         w.command_finished.connect(lambda ec: self._on_time_fix_done(ec))
         w.error_occurred.connect(lambda e: self._on_ssh_error("FIX_TIME", e))
+        self._watch_ssh_authentication(w, self._fix_time)
         self._workers.append(w)
         w.start()
 
@@ -309,6 +360,7 @@ class HealthCheckService(QObject):
         w.set_command("bash -c 'source /opt/limx/install/setup.bash && export MROS_IP_LIST=10.192.1.x && timeout --signal=KILL 8s /opt/limx/install/bin/mrostopic hz /ImuData' 2>&1")
         w.command_finished.connect(lambda ec, worker=w: self._on_imu_output(ec, worker))
         w.error_occurred.connect(lambda e: self._on_ssh_error("IMU", e))
+        self._watch_ssh_authentication(w, self._check_imu)
         self._workers.append(w)
         w.start()
 

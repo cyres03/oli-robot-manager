@@ -15,6 +15,8 @@ a = Analysis(
         'websockets',
         'paramiko',
         'httpx',
+        'keyring',
+        'keyring.backends.Windows',
         'PyQt6.QtWebSockets',
         'PyQt6.QtNetwork',
         'PyQt6.QtSvg',
