@@ -1,0 +1,79 @@
+name: 缺陷报告
+description: 报告可复现的软件错误或行为回归
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请提供最小复现步骤，不要粘贴密码、令牌、私钥或包含客户信息的完整日志。
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题摘要
+      description: 实际发生了什么，影响谁。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 最小复现步骤
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 平台
+      multiple: true
+      options:
+        - Windows
+        - Linux
+        - Cross-platform
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 软件版本 / Commit
+      placeholder: v1.0.1 / d1454d0
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境
+      description: 操作系统、Python、机器人型号/ACCID、固件、网络方式。敏感信息请脱敏。
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 日志与截图
+      description: 仅附相关片段，并删除密码、令牌、身份证号等敏感信息。
+  - type: dropdown
+    id: severity
+    attributes:
+      label: 严重程度
+      options:
+        - P0 - 安全事故、机器人失控或完全不可用
+        - P1 - 核心流程阻断且无替代方案
+        - P2 - 功能异常但存在替代方案
+        - P3 - 轻微体验或文档问题
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: 真机安全影响与临时规避
+      description: 是否涉及动作、校零、停止或硬件风险；不涉及填“无”。
+    validations:
+      required: true

@@ -8,19 +8,41 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $projectRoot
 
+$version = (Get-Content (Join-Path $projectRoot 'VERSION') -Raw).Trim()
+$distRoot = Join-Path $projectRoot 'dist\windows'
+$buildRoot = Join-Path $projectRoot 'build\windows'
+$releaseRoot = Join-Path $projectRoot 'release\windows'
+$portableDir = Join-Path $distRoot 'OliRobotManager'
+$portableZip = Join-Path $releaseRoot "OliRobotManager-Windows-x64-v$version.zip"
+
 if ($Clean) {
-    if (Test-Path 'build') {
-        Remove-Item 'build' -Recurse -Force
+    if (Test-Path $buildRoot) {
+        Remove-Item $buildRoot -Recurse -Force
     }
-    if (Test-Path 'dist') {
-        Remove-Item 'dist' -Recurse -Force
+    if (Test-Path $distRoot) {
+        Remove-Item $distRoot -Recurse -Force
+    }
+    if (Test-Path $releaseRoot) {
+        Remove-Item $releaseRoot -Recurse -Force
     }
 }
 
-python -m PyInstaller --noconfirm OliRobotManager.spec
+New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
+
+python -m PyInstaller `
+    --noconfirm `
+    --clean `
+    --distpath $distRoot `
+    --workpath $buildRoot `
+    OliRobotManager.spec
+
+if (Test-Path $portableZip) {
+    Remove-Item $portableZip -Force
+}
+Compress-Archive -Path $portableDir -DestinationPath $portableZip -CompressionLevel Optimal
+Write-Host "Windows portable release completed: $portableZip"
 
 if ($SkipInstaller) {
-    Write-Host 'Portable build completed: dist/OliRobotManager'
     exit 0
 }
 
@@ -32,10 +54,14 @@ $isccCandidates = @(
 $iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 if (-not $iscc) {
-    Write-Warning 'Inno Setup 6 was not found. Portable build is ready under dist/OliRobotManager.'
+    Write-Warning "Inno Setup 6 was not found. Portable build is ready: $portableZip"
     Write-Warning 'Install Inno Setup 6 and rerun this script to generate an installer.'
     exit 0
 }
 
-& $iscc (Join-Path $projectRoot 'installer\OliRobotManager.iss')
-Write-Host 'Installer build completed: installer\Output'
+& $iscc `
+    "/DMyAppVersion=$version" `
+    "/DMyAppOutputDir=$releaseRoot" `
+    "/DMyAppOutputBaseFilename=OliRobotManager-Windows-x64-Setup-v$version" `
+    (Join-Path $projectRoot 'installer\OliRobotManager.iss')
+Write-Host "Windows installer completed: $releaseRoot\OliRobotManager-Windows-x64-Setup-v$version.exe"

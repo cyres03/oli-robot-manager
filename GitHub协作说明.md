@@ -104,6 +104,12 @@ SHA-256: BACC27196221226AFE5339F3A47C9E492C565327DA0E454A7B223370E32A58EE
 
 ## 3. 每项开发工作的标准流程
 
+本仓库使用两周 Sprint、GitHub Issues 和 GitHub Flow。Sprint Planning、
+Definition of Ready、Definition of Done、Review 与 Retrospective 的完整规则见
+[敏捷开发流程](敏捷开发流程.md)。
+
+每个分支和 Pull Request 必须关联一个已满足 Definition of Ready 的 Issue。
+
 开始前同步主分支：
 
 ```powershell
@@ -114,7 +120,7 @@ git pull
 创建功能分支，名称使用英文短横线：
 
 ```powershell
-git switch -c feature/new-robot-identity
+git switch -c feat/new-robot-identity
 ```
 
 修改完成后检查：
@@ -132,7 +138,7 @@ python -m pytest -q
 ```powershell
 git add .
 git commit -m "feat: support new robot identity"
-git push -u origin feature/new-robot-identity
+git push -u origin feat/new-robot-identity
 ```
 
 然后在 GitHub 页面点击 `Compare & pull request`，填写：
@@ -166,6 +172,7 @@ git merge origin/main
 - `.env` 和任何密码、令牌、私钥
 - `.venv/`
 - `build/`、`dist/`、`release_packages/`
+- `release/`
 - `installer/Output/`
 - `__pycache__/`、`*.pyc`、`*.log`
 - 本地数据库和机器人下载日志
@@ -179,9 +186,9 @@ git merge origin/main
 
 | 分支 | 工作内容 | 验收结果 |
 |------|----------|----------|
-| `feature/robot-profile` | 建立机器人型号与能力配置 | Oli 配置不回归，新型号可被选择 |
-| `feature/new-robot-identity` | SSID、序列号和型号识别 | 两种机器人均能正确识别 |
-| `feature/new-robot-adapter` | 新协议、状态和安全停止 | 状态可读，停止命令真机有效 |
-| `feature/new-robot-acceptance` | 新型号验收项和阈值 | 自动验收使用正确地址与标准 |
+| `feat/robot-profile` | 建立机器人型号与能力配置 | Oli 配置不回归，新型号可被选择 |
+| `feat/new-robot-identity` | SSID、序列号和型号识别 | 两种机器人均能正确识别 |
+| `feat/new-robot-adapter` | 新协议、状态和安全停止 | 状态可读，停止命令真机有效 |
+| `feat/new-robot-acceptance` | 新型号验收项和阈值 | 自动验收使用正确地址与标准 |
 
 首轮不要多人同时大改 `config.py`、`app.py` 和 `ui/main_window.py`。先约定接口和负责人，可以明显减少合并冲突。

@@ -9,6 +9,7 @@ __pycache__/
 # Build and release output
 build/
 dist/
+release/
 release_packages/
 installer/Output/
 *.log

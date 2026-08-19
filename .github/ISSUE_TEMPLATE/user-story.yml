@@ -1,0 +1,76 @@
+name: 用户故事
+description: 描述一个可独立验收的用户价值
+title: "[Story] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先写验收标准，再进入 Sprint。机器人动作相关需求必须填写安全工况。
+  - type: textarea
+    id: story
+    attributes:
+      label: 用户故事
+      description: 作为谁、需要什么、为什么有价值。
+      placeholder: 作为售后验收人员，我希望……，以便……
+    validations:
+      required: true
+  - type: textarea
+    id: value
+    attributes:
+      label: 业务价值
+      description: 解决什么现场问题，成功后带来什么结果。
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 目标平台
+      multiple: true
+      options:
+        - Windows
+        - Linux
+        - Cross-platform
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 使用可观察、可判定的 Given / When / Then 或清单。
+      placeholder: |
+        - [ ] Given … When … Then …
+        - [ ] 异常场景……
+    validations:
+      required: true
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: 本次不做
+      description: 明确范围边界，防止 Sprint 内持续扩张。
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: 依赖与阻塞
+      description: 硬件、账号、网络、固件、资源包或其他 Issue。
+  - type: textarea
+    id: safety
+    attributes:
+      label: 真机与安全影响
+      description: 涉及动作、校零、底层控制时，填写型号、工况、停止方式和风险；不涉及时填“无”。
+    validations:
+      required: true
+  - type: dropdown
+    id: estimate
+    attributes:
+      label: 故事点
+      options:
+        - "1"
+        - "2"
+        - "3"
+        - "5"
+        - "8"
+        - 待 Refinement
+    validations:
+      required: true

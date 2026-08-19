@@ -14,7 +14,8 @@ sudo apt install -y python3 python3-venv python3-pip network-manager openssh-cli
 ## Run from source
 
 ```bash
-chmod +x scripts/linux_setup.sh scripts/linux_run.sh scripts/linux_build_portable.sh
+chmod +x scripts/linux_setup.sh scripts/linux_run.sh scripts/linux_build_portable.sh \
+  scripts/linux_setup_backlash_resource.sh
 ./scripts/linux_setup.sh
 ./scripts/linux_run.sh
 ```
@@ -24,17 +25,19 @@ chmod +x scripts/linux_setup.sh scripts/linux_run.sh scripts/linux_build_portabl
 Run this on Linux or WSL with GUI/runtime dependencies available:
 
 ```bash
+./scripts/linux_setup_backlash_resource.sh
 ./scripts/linux_build_portable.sh
 ```
 
 Output:
 
 ```text
-dist/OliRobotManager/OliRobotManager
+dist/linux/OliRobotManager/OliRobotManager
+release/linux/OliRobotManager-Linux-<arch>-v<version>.tar.gz
 ```
 
-You can zip the whole `dist/OliRobotManager` directory and move it to another
-Linux machine with compatible system libraries.
+Use the generated `release/linux/*.tar.gz` package to move the application to
+another Linux machine with the same architecture and compatible system libraries.
 
 ## Notes
 
