@@ -57,6 +57,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup_backlash_resource.ps1
 - [Linux 更新说明](更新说明-Linux-20260819.md)
 - [跨平台迭代说明](更新说明-跨平台-20260820.md)
 - [敏捷开发流程](敏捷开发流程.md)
+- [单人敏捷维护手册](单人敏捷维护手册.md)
+- [产品路线图](产品路线图.md)
+- [当前 Sprint](.github/CURRENT_SPRINT.md)
 
 ## 协作原则
 
