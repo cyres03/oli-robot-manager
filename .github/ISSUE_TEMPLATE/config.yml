@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 机器人凭据或客户敏感信息
+    url: https://github.com/cyres03/oli-robot-manager/security
+    about: 不要在公开 Issue 中提交密码、令牌、私钥、客户信息或未脱敏日志，请通过内部安全渠道联系负责人。

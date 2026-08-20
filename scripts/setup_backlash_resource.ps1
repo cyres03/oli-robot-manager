@@ -7,10 +7,27 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $resourceDirectory = Join-Path $projectRoot "resources\backlash"
 $targetPath = Join-Path $resourceDirectory "backlash_install.zip"
+$expectedSha256 = "BACC27196221226AFE5339F3A47C9E492C565327DA0E454A7B223370E32A58EE"
+
+function Test-BacklashResource {
+    if (-not (Test-Path $targetPath)) {
+        return $false
+    }
+    $actualSha256 = (Get-FileHash $targetPath -Algorithm SHA256).Hash.ToUpperInvariant()
+    if ($actualSha256 -ne $expectedSha256) {
+        Write-Warning "Backlash resource checksum mismatch. Expected $expectedSha256, actual $actualSha256."
+        return $false
+    }
+    return $true
+}
 
 if (Test-Path $targetPath) {
-    Write-Host "Backlash resource already exists: $targetPath"
-    exit 0
+    if (Test-BacklashResource) {
+        Write-Host "Backlash resource already exists and is verified: $targetPath"
+        exit 0
+    }
+    Remove-Item $targetPath -Force
+    Write-Warning "Invalid Backlash resource was removed; downloading a verified copy."
 }
 
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
@@ -32,4 +49,9 @@ try {
     Pop-Location
 }
 
-Write-Host "Backlash resource downloaded: $targetPath"
+if (-not (Test-BacklashResource)) {
+    Remove-Item $targetPath -Force -ErrorAction SilentlyContinue
+    throw "Downloaded Backlash resource failed checksum verification."
+}
+
+Write-Host "Backlash resource downloaded and verified: $targetPath"

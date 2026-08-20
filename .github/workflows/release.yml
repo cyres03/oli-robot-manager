@@ -1,0 +1,149 @@
+name: Platform Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: Validate version
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate tag and VERSION
+        id: version
+        shell: bash
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match VERSION v$version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Build Linux x86_64
+    needs: metadata
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install Linux runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 libgl1 libxcb-cursor0 libxcb-xinerama0 libxkbcommon-x11-0
+
+      - name: Prepare Backlash resource
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          chmod +x scripts/linux_setup_backlash_resource.sh
+          ./scripts/linux_setup_backlash_resource.sh
+
+      - name: Build Linux package
+        run: |
+          chmod +x scripts/linux_setup.sh scripts/linux_build_portable.sh
+          ./scripts/linux_build_portable.sh
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-x86_64
+          path: release/linux/*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows x64
+    needs: metadata
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install Python build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Prepare Backlash resource
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: ./scripts/setup_backlash_resource.ps1
+
+      - name: Build Windows packages
+        shell: pwsh
+        run: ./build_release.ps1 -Clean
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x64
+          path: |
+            release/windows/*.zip
+            release/windows/*.exe
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    permissions:
+      contents: write
+    needs:
+      - metadata
+      - linux
+      - windows
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mapfile -t assets < <(find release-assets -maxdepth 1 -type f -print | sort)
+          if [[ ${#assets[@]} -eq 0 ]]; then
+            echo "No release assets were downloaded." >&2
+            exit 1
+          fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --title "Oli Robot Manager $GITHUB_REF_NAME" \
+              --generate-notes
+          fi

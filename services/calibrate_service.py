@@ -11,7 +11,12 @@ from PyQt6.QtCore import QObject, QThread, pyqtSignal
 import httpx
 from config import ROBOT_CONFIG
 from network.mcp_client import RobotClient
-from network.ssh_client import SshClient
+from network.ssh_client import (
+    SshAuthenticationError,
+    SshClient,
+    SshRobotMismatchError,
+    current_robot_id,
+)
 from workers.mcp_worker import McpWorker
 
 
@@ -39,19 +44,38 @@ def _backlash_payload_path() -> str:
 
 class MissionEngineCalibrateWorker(QThread):
     finished = pyqtSignal(bool, str)
+    authentication_required = pyqtSignal(str, str, str)
+
+    def __init__(self, robot_id: str, parent=None):
+        super().__init__(parent)
+        self.robot_id = robot_id
+        self.host = ROBOT_CONFIG.main_control_ip
+        self.username = ROBOT_CONFIG.main_control_user
 
     def run(self):
+        connected_robot_id = current_robot_id()
+        if connected_robot_id != self.robot_id:
+            self.finished.emit(
+                False,
+                f"当前机器人是 {connected_robot_id or '未知'}，"
+                f"校零目标是 {self.robot_id}，操作已取消",
+            )
+            return
+
         led_detail = ""
         try:
-            led_result = RobotClient(ROBOT_CONFIG.websocket_url, ROBOT_CONFIG.ws_accid).enable_led_control(False)
+            led_result = RobotClient(
+                ROBOT_CONFIG.websocket_url, self.robot_id
+            ).enable_led_control(False)
             led_detail = f"SDK LED 控制已关闭: {led_result}"
         except Exception as error:
             led_detail = f"SDK LED 控制关闭失败，继续尝试校零: {error}"
 
         client = SshClient(
-            ROBOT_CONFIG.main_control_ip,
-            ROBOT_CONFIG.main_control_user,
+            self.host,
+            self.username,
             list(ROBOT_CONFIG.main_control_passwords),
+            robot_id=self.robot_id,
         )
         try:
             client.connect(timeout=8)
@@ -76,6 +100,15 @@ class MissionEngineCalibrateWorker(QThread):
                 self.finished.emit(False, f"{led_detail}\nMissionEngine 未返回 success: {output}")
                 return
             self.finished.emit(True, f"{led_detail}\n已进入 MissionEngine Calibration，机器人应显示校零中并使用蓝色灯语。\n{output}")
+        except SshAuthenticationError:
+            self.authentication_required.emit(
+                self.host,
+                self.username,
+                self.robot_id,
+            )
+            self.finished.emit(False, "当前机器人尚未授权 SSH 密钥，请完成一次密码验证")
+        except SshRobotMismatchError as error:
+            self.finished.emit(False, str(error))
         except Exception as error:
             self.finished.emit(False, f"{led_detail}\n{error}")
         finally:
@@ -165,17 +198,28 @@ class BacklashConsoleWorker(QThread):
 
 class BacklashDirectWorker(QThread):
     finished = pyqtSignal(str, bool, str, object)
+    authentication_required = pyqtSignal(str, str, str)
 
-    def __init__(self, operation: str, payload: dict | None = None, parent=None):
+    def __init__(
+        self,
+        operation: str,
+        payload: dict | None = None,
+        parent=None,
+        robot_id: str = "",
+    ):
         super().__init__(parent)
         self.operation = operation
         self.payload = payload or {}
+        self.robot_id = robot_id or ROBOT_CONFIG.ws_accid
 
     def run(self):
+        password = self.payload.get("password")
+        passwords = [password] if password else list(ROBOT_CONFIG.main_control_passwords)
         client = SshClient(
             self.payload.get("host") or ROBOT_CONFIG.main_control_ip,
             self.payload.get("username") or ROBOT_CONFIG.main_control_user,
-            [self.payload.get("password") or ROBOT_CONFIG.main_control_passwords[0]],
+            passwords,
+            robot_id=self.robot_id,
         )
         try:
             client.connect(timeout=10)
@@ -200,6 +244,18 @@ class BacklashDirectWorker(QThread):
                 self.finished.emit(self.operation, True, "内置直连模式已就绪；开始检测会自动准备环境并运行 backlash_detection", self._state("ready"))
             else:
                 self.finished.emit(self.operation, False, f"未知操作: {self.operation}", {})
+        except SshAuthenticationError:
+            self.authentication_required.emit(
+                self.payload.get("host") or ROBOT_CONFIG.main_control_ip,
+                self.payload.get("username") or ROBOT_CONFIG.main_control_user,
+                self.robot_id,
+            )
+            self.finished.emit(
+                self.operation,
+                False,
+                "当前机器人尚未授权 SSH 密钥，请完成一次密码验证",
+                self._state("authorization_required"),
+            )
         except Exception as error:
             try:
                 self._restore_zeroing_node(client)
@@ -316,6 +372,7 @@ class BacklashDirectWorker(QThread):
 class CalibrateService(QObject):
     calibrate_started = pyqtSignal(str)
     calibrate_result = pyqtSignal(str, bool, str)  # cal_type, success, detail
+    ssh_authorization_required = pyqtSignal(str, str, str, str)
     backlash_launched = pyqtSignal(str)             # exe path
     backlash_state_ready = pyqtSignal(dict)
 
@@ -326,6 +383,7 @@ class CalibrateService(QObject):
         self._mission_worker: MissionEngineCalibrateWorker | None = None
         self._backlash_worker: BacklashConsoleWorker | None = None
         self._last_backlash_payload: dict = {}
+        self._last_backlash_operation = ""
         self._mcp.tool_result_ready.connect(self._on_result)
         self._mcp.tool_error.connect(self._on_error)
 
@@ -335,10 +393,29 @@ class CalibrateService(QObject):
             self.calibrate_result.emit("mission_engine", False, "校零正在执行中")
             return
         self.calibrate_started.emit("mission_engine")
-        self._mission_worker = MissionEngineCalibrateWorker(self)
+        self._mission_worker = MissionEngineCalibrateWorker(
+            ROBOT_CONFIG.ws_accid, self
+        )
+        self._mission_worker.authentication_required.connect(
+            lambda host, username, robot_id: self.ssh_authorization_required.emit(
+                host, username, "mission_engine", robot_id
+            )
+        )
         self._mission_worker.finished.connect(
             lambda success, detail: self.calibrate_result.emit("mission_engine", success, detail))
         self._mission_worker.start()
+
+    def retry_after_ssh_authorization(self, operation: str):
+        if operation == "mission_engine":
+            self.run_mission_engine_calibrate()
+        elif operation == "backlash" and self._last_backlash_operation:
+            self._run_backlash_operation(
+                self._last_backlash_operation,
+                self._last_backlash_payload,
+            )
+
+    def cancel_ssh_authorization(self, operation: str, detail: str):
+        self.calibrate_result.emit(operation, False, detail)
 
     def run_websocket_calibrate(self):
         """Calibrate via WebSocket request_calibrate."""
@@ -363,12 +440,9 @@ class CalibrateService(QObject):
         self._run_backlash_operation("launch")
 
     def connect_backlash_console(self, payload: dict):
-        self._last_backlash_payload = dict(payload)
         self._run_backlash_operation("connect", payload)
 
     def start_backlash_workflow(self, payload: dict | None = None):
-        if payload:
-            self._last_backlash_payload = dict(payload)
         self._run_backlash_operation("start", payload or self._last_backlash_payload)
 
     def refresh_backlash_state(self):
@@ -384,6 +458,11 @@ class CalibrateService(QObject):
         if self._backlash_worker and self._backlash_worker.isRunning():
             self.calibrate_result.emit("backlash", False, "Backlash 操作正在执行中")
             return
+        self._last_backlash_operation = operation
+        if payload is not None:
+            self._last_backlash_payload = {
+                key: value for key, value in payload.items() if key != "password"
+            }
         self.calibrate_started.emit("backlash")
         direct_operation = {
             "connect": "prepare",
@@ -391,8 +470,18 @@ class CalibrateService(QObject):
             "download_all": "download_all",
             "disconnect": "disconnect",
         }.get(operation, operation)
-        self._backlash_worker = BacklashDirectWorker(direct_operation, payload, self)
+        self._backlash_worker = BacklashDirectWorker(
+            direct_operation,
+            payload,
+            self,
+            robot_id=ROBOT_CONFIG.ws_accid,
+        )
         self._backlash_worker.finished.connect(self._on_backlash_finished)
+        self._backlash_worker.authentication_required.connect(
+            lambda host, username, robot_id: self.ssh_authorization_required.emit(
+                host, username, "backlash", robot_id
+            )
+        )
         self._backlash_worker.start()
 
     def _on_backlash_finished(self, operation: str, success: bool, detail: str, state):

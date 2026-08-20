@@ -5,10 +5,12 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSignal
 from config import ROBOT_CONFIG
+from services import credential_store
 
 
 class SettingsPanel(QWidget):
     settings_changed = pyqtSignal(dict)
+    credentials_clear_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -68,6 +70,23 @@ class SettingsPanel(QWidget):
 
         layout.addWidget(conn_group)
 
+        credential_group = QGroupBox("安全凭据")
+        credential_group.setStyleSheet(conn_group.styleSheet())
+        credential_layout = QHBoxLayout(credential_group)
+        self.credential_status = QLabel()
+        self.credential_status.setStyleSheet(
+            "color: #4E5969; font-size: 12px; background: transparent;"
+        )
+        credential_layout.addWidget(self.credential_status)
+        credential_layout.addStretch()
+        clear_credentials_btn = QPushButton("清除当前机器人密码")
+        clear_credentials_btn.clicked.connect(
+            self.credentials_clear_requested.emit
+        )
+        credential_layout.addWidget(clear_credentials_btn)
+        layout.addWidget(credential_group)
+        self.refresh_credential_status()
+
         # Save button
         save_btn = QPushButton("保存设置")
         save_btn.setStyleSheet(
@@ -78,6 +97,24 @@ class SettingsPanel(QWidget):
         layout.addWidget(save_btn)
 
         layout.addStretch()
+
+    def refresh_credential_status(self):
+        robot_id = ROBOT_CONFIG.ws_accid or "未识别"
+        main_saved = bool(credential_store.get_password(
+            ROBOT_CONFIG.ws_accid,
+            ROBOT_CONFIG.main_control_ip,
+            ROBOT_CONFIG.main_control_user,
+        ))
+        perception_saved = bool(credential_store.get_password(
+            ROBOT_CONFIG.ws_accid,
+            ROBOT_CONFIG.perception_ip,
+            ROBOT_CONFIG.perception_user,
+        ))
+        self.credential_status.setText(
+            f"{credential_store.backend_name()} | {robot_id} | "
+            f"主控: {'已保存' if main_saved else '未保存'} | "
+            f"感知: {'已保存' if perception_saved else '未保存'}"
+        )
 
     def _save_settings(self):
         changes = {}

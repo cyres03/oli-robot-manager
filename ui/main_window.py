@@ -13,8 +13,12 @@ from services.health_check_service import HealthCheckService
 from services.power_cycle_service import PowerCycleService
 from services.connection_service import ConnectionService
 from services.calibrate_service import CalibrateService
+from services import credential_store
 from services.robot_monitor import RobotMonitor
+from network.ssh_client import current_robot_id
 from workers.mcp_worker import McpWorker
+from workers.ssh_key_install_worker import SshKeyInstallWorker
+from workers.ssh_worker import SshWorker
 from ui.widgets.sidebar import Sidebar
 from ui.widgets.status_bar_widget import StatusBarWidget
 from ui.widgets.status_banner import StatusBanner
@@ -26,6 +30,7 @@ from ui.panels.calibrate_panel import CalibratePanel
 from ui.panels.control_panel import ControlPanel
 from ui.panels.acceptance_test_panel import AcceptanceTestPanel
 from ui.dialogs.ssh_terminal_window import open_native_ssh_terminal
+from ui.dialogs.password_dialog import PasswordDialog
 from config import ROBOT_CONFIG
 
 
@@ -46,6 +51,9 @@ class MainWindow(QMainWindow):
         self._stack_effect: QGraphicsOpacityEffect | None = None
         self._stack_fade_animation: QPropertyAnimation | None = None
         self._robot_identity_timer: QTimer | None = None
+        self._connection_timer: QTimer | None = None
+        self._ssh_key_worker: SshKeyInstallWorker | None = None
+        self._ssh_probe_worker: SshWorker | None = None
         self._last_status_log_key: tuple[str, str] | None = None
         self._last_status_log_at = 0.0
         self._was_minimized = False
@@ -78,7 +86,7 @@ class MainWindow(QMainWindow):
 
         self._build_content()
         self._wire_signals()
-        self._connection_service.check_wifi()
+        self._refresh_connection_status()
 
     def _build_ui(self):
         central = QWidget()
@@ -156,6 +164,9 @@ class MainWindow(QMainWindow):
                 "pass" if r.get('passed') else "error"))
         self._health_service.diagnostic_error.connect(
             lambda m: self.terminal.append_log(f"[诊断错误] {m}", "error"))
+        self._health_service.ssh_authorization_required.connect(
+            self._authorize_ssh_for_health_check
+        )
 
         # Dance/Motion → terminal
         self._dance_service.dance_executed.connect(
@@ -182,13 +193,29 @@ class MainWindow(QMainWindow):
                 f"[校零] {t}: {'成功' if ok else '失败'} {d}", "pass" if ok else "error"))
         self._calibrate_service.backlash_launched.connect(
             lambda p: self.terminal.append_log(f"[校零] 启动: {p}", "info"))
+        self._calibrate_service.ssh_authorization_required.connect(
+            self._authorize_ssh_for_calibration
+        )
 
         # Robot monitor → status banner
         self._robot_monitor.status_updated.connect(self.status_banner.update_status)
         self._robot_monitor.status_updated.connect(self.control_panel.update_robot_status)
         self._robot_monitor.connected.connect(
             lambda ok: self.status_banner.set_disconnected() if not ok else None)
+        self._robot_monitor.connected.connect(self._connection_service.update_ws)
+        self._robot_monitor.status_updated.connect(
+            lambda _info: self._connection_service.update_ws(True))
         self._robot_monitor.status_updated.connect(self._on_robot_status)
+        self.acceptance_panel.ssh_connection_changed.connect(self._connection_service.update_ssh)
+        self.acceptance_panel.ssh_authorization_required.connect(
+            self._authorize_ssh_for_acceptance
+        )
+        self.acceptance_panel.sudo_password_required.connect(
+            self._request_perception_sudo_password
+        )
+        self.settings_panel.credentials_clear_requested.connect(
+            self._clear_current_robot_credentials
+        )
 
         # Control panel actions
         self.control_panel.action_requested.connect(self._on_control_action)
@@ -200,6 +227,15 @@ class MainWindow(QMainWindow):
         self._robot_identity_timer.setInterval(5000)
         self._robot_identity_timer.timeout.connect(self._poll_robot_identity)
         self._robot_identity_timer.start()
+
+        self._connection_timer = QTimer(self)
+        self._connection_timer.setInterval(5000)
+        self._connection_timer.timeout.connect(self._refresh_connection_status)
+        self._connection_timer.start()
+
+    def _refresh_connection_status(self):
+        self._connection_service.check_wifi()
+        self._connection_service.check_mcp(ROBOT_CONFIG.mcp_url)
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -262,8 +298,7 @@ class MainWindow(QMainWindow):
         if key.startswith("ssh:"):
             _, target = key.split(":", 1)
             user, host = target.rsplit("@", 1)
-            self.terminal.append_log(f"[SSH] 打开终端 {user}@{host}...", "command")
-            open_native_ssh_terminal(host, user)
+            self._open_ssh_terminal(host, user)
             return
 
         if key == "wifi_selector":
@@ -336,6 +371,291 @@ class MainWindow(QMainWindow):
         elif cal_type == "backlash":
             self._calibrate_service.launch_backlash_test()
 
+    def _authorize_ssh_for_calibration(
+        self, host: str, username: str, operation: str, robot_id: str
+    ):
+        self._request_ssh_key_authorization(
+            host,
+            username,
+            robot_id,
+            lambda: self._calibrate_service.retry_after_ssh_authorization(operation),
+            lambda detail: self._calibrate_service.cancel_ssh_authorization(
+                operation, detail
+            ),
+        )
+
+    def _authorize_ssh_for_acceptance(
+        self, host: str, username: str, robot_id: str
+    ):
+        self._request_ssh_key_authorization(
+            host,
+            username,
+            robot_id,
+            lambda: self.acceptance_panel.finish_ssh_authorization(True, ""),
+            lambda detail: self.acceptance_panel.finish_ssh_authorization(
+                False, detail
+            ),
+        )
+
+    def _authorize_ssh_for_health_check(
+        self, host: str, username: str, robot_id: str
+    ):
+        self._request_ssh_key_authorization(
+            host,
+            username,
+            robot_id,
+            lambda: self._health_service.finish_ssh_authorization(True, ""),
+            lambda detail: self._health_service.finish_ssh_authorization(
+                False, detail
+            ),
+        )
+
+    def _request_perception_sudo_password(
+        self, host: str, username: str, robot_id: str
+    ):
+        if not robot_id or robot_id != ROBOT_CONFIG.ws_accid:
+            self.acceptance_panel.submit_sudo_password("")
+            return
+
+        password = credential_store.get_password(robot_id, host, username)
+        if password:
+            self.acceptance_panel.submit_sudo_password(
+                password,
+                remember=True,
+                from_store=True,
+            )
+            password = ""
+            return
+
+        if ROBOT_CONFIG.perception_password:
+            password = ROBOT_CONFIG.perception_password
+            self.acceptance_panel.submit_sudo_password(
+                password,
+                remember=False,
+                from_store=False,
+            )
+            password = ""
+            return
+
+        password, remember, accepted = PasswordDialog.get_password(
+            self,
+            "感知机时间校准",
+            f"机器人 {robot_id} 的感知机时间不正确。\n"
+            f"请输入 {username}@{host} 的 sudo 密码：\n"
+            "可安全保存到系统凭据管理器，供该机器人后续自动校时使用。",
+        )
+        self.acceptance_panel.submit_sudo_password(
+            password if accepted else "",
+            remember=remember,
+            from_store=False,
+        )
+        password = ""
+
+    def _open_ssh_terminal(self, host: str, username: str):
+        if self._ssh_probe_worker and self._ssh_probe_worker.isRunning():
+            self.terminal.append_log("[SSH] 正在检查当前机器人 SSH...", "warn")
+            return
+
+        robot_id = ROBOT_CONFIG.ws_accid
+        connected_robot_id = current_robot_id()
+        if not robot_id or connected_robot_id != robot_id:
+            self.terminal.append_log(
+                "[SSH] 机器人身份尚未就绪或正在切换，请稍后重试", "error"
+            )
+            return
+        self.terminal.append_log(
+            f"[SSH] 正在检查 {username}@{host} 的密钥授权...", "info"
+        )
+        self._ssh_probe_worker = SshWorker(
+            host, username, [], self, robot_id=robot_id
+        )
+        self._ssh_probe_worker.set_command("true")
+        self._ssh_probe_worker.command_finished.connect(
+            lambda _exit_code: self._open_verified_ssh_terminal(
+                host, username, robot_id
+            )
+        )
+        self._ssh_probe_worker.authentication_required.connect(
+            lambda auth_host, auth_username, expected_robot_id:
+            self._request_ssh_key_authorization(
+                auth_host,
+                auth_username,
+                expected_robot_id,
+                lambda: self._open_verified_ssh_terminal(
+                    host, username, robot_id
+                ),
+                lambda detail: self.terminal.append_log(f"[SSH] {detail}", "error"),
+            )
+        )
+        self._ssh_probe_worker.error_occurred.connect(
+            lambda detail: self.terminal.append_log(f"[SSH] {detail}", "error")
+        )
+        self._ssh_probe_worker.start()
+
+    def _open_verified_ssh_terminal(
+        self, host: str, username: str, robot_id: str
+    ):
+        connected_robot_id = current_robot_id()
+        if ROBOT_CONFIG.ws_accid != robot_id or connected_robot_id != robot_id:
+            self.terminal.append_log(
+                f"[SSH] 机器人已从 {robot_id} 切换，未打开旧目标终端",
+                "error",
+            )
+            return
+        open_native_ssh_terminal(host, username, robot_id)
+
+    def _request_ssh_key_authorization(
+        self, host: str, username: str, robot_id: str, on_success, on_failure
+    ):
+        if self._ssh_key_worker and self._ssh_key_worker.isRunning():
+            on_failure("另一个 SSH 密钥授权正在进行中")
+            return
+
+        if not robot_id or robot_id != ROBOT_CONFIG.ws_accid:
+            on_failure("机器人已切换或身份尚未识别，已取消旧操作")
+            return
+
+        password = credential_store.get_password(robot_id, host, username)
+        if password:
+            self._start_ssh_key_authorization(
+                host,
+                username,
+                robot_id,
+                password,
+                remember=True,
+                from_store=True,
+                on_success=on_success,
+                on_failure=on_failure,
+            )
+            password = ""
+            return
+
+        self._prompt_ssh_key_authorization(
+            host, username, robot_id, on_success, on_failure
+        )
+
+    def _prompt_ssh_key_authorization(
+        self, host: str, username: str, robot_id: str, on_success, on_failure
+    ):
+        password, remember, accepted = PasswordDialog.get_password(
+            self,
+            "首次连接机器人",
+            f"机器人 {robot_id} 尚未授权本机 SSH 密钥。\n"
+            f"请输入 {username}@{host} 的密码：\n"
+            "授权成功后将优先使用 SSH 密钥；也可将密码安全保存到系统凭据管理器。",
+        )
+        if not accepted or not password:
+            self.terminal.append_log("[SSH] 已取消当前机器人的密钥授权", "warn")
+            on_failure("已取消 SSH 密钥授权")
+            return
+
+        self._start_ssh_key_authorization(
+            host,
+            username,
+            robot_id,
+            password,
+            remember,
+            False,
+            on_success,
+            on_failure,
+        )
+        password = ""
+
+    def _start_ssh_key_authorization(
+        self,
+        host: str,
+        username: str,
+        robot_id: str,
+        password: str,
+        remember: bool,
+        from_store: bool,
+        on_success,
+        on_failure,
+    ):
+        self.terminal.append_log(f"[SSH] 正在为 {username}@{host} 授权本机密钥...", "info")
+        self._ssh_key_worker = SshKeyInstallWorker(
+            host,
+            username,
+            password,
+            robot_id,
+            remember=remember,
+            from_store=from_store,
+            parent=self,
+        )
+        password = ""
+        self._ssh_key_worker.completed.connect(
+            lambda success, detail, error_code: self._on_ssh_key_authorized(
+                success,
+                detail,
+                error_code,
+                host,
+                username,
+                robot_id,
+                on_success,
+                on_failure,
+            )
+        )
+        self._ssh_key_worker.start()
+
+    def _on_ssh_key_authorized(
+        self,
+        success: bool,
+        detail: str,
+        error_code: str,
+        host: str,
+        username: str,
+        robot_id: str,
+        on_success,
+        on_failure,
+    ):
+        worker = self._ssh_key_worker
+        remember = worker.remember if worker else False
+        from_store = worker.from_store if worker else False
+        credential_saved = worker.credential_saved if worker else None
+        if success and robot_id != ROBOT_CONFIG.ws_accid:
+            success = False
+            detail = "授权期间机器人已切换，请在当前机器人上重试"
+        self.terminal.append_log(f"[SSH] {detail}", "pass" if success else "error")
+        if success:
+            if remember and not from_store:
+                self.terminal.append_log(
+                    "[凭据] 密码已保存到系统凭据管理器"
+                    if credential_saved
+                    else "[凭据] 系统凭据管理器不可用，密码未保存",
+                    "pass" if credential_saved else "warn",
+                )
+            self._connection_service.update_ssh(True)
+            on_success()
+            return
+        if from_store and error_code == "authentication":
+            credential_store.delete_password(robot_id, host, username)
+            self.terminal.append_log(
+                "[凭据] 已保存密码失效，已从系统凭据管理器删除",
+                "warn",
+            )
+            self._prompt_ssh_key_authorization(
+                host, username, robot_id, on_success, on_failure
+            )
+            return
+        on_failure(detail)
+        QMessageBox.warning(self, "SSH 密钥授权失败", detail)
+
+    def _clear_current_robot_credentials(self):
+        robot_id = ROBOT_CONFIG.ws_accid
+        cleared = credential_store.clear_robot_passwords(
+            robot_id,
+            [
+                (ROBOT_CONFIG.main_control_ip, ROBOT_CONFIG.main_control_user),
+                (ROBOT_CONFIG.perception_ip, ROBOT_CONFIG.perception_user),
+            ],
+        )
+        self.settings_panel.refresh_credential_status()
+        QMessageBox.information(
+            self,
+            "清除已保存密码",
+            f"已清除机器人 {robot_id} 的 {cleared} 个系统凭据。",
+        )
+
     def _show_wifi_selector(self):
         from ui.dialogs.wifi_selector_dialog import WifiSelectorDialog
         dialog = WifiSelectorDialog(self)
@@ -389,10 +709,12 @@ class MainWindow(QMainWindow):
 
     def _set_control_target(self, accid: str, message: str):
         ROBOT_CONFIG.ws_accid = accid
+        self._connection_service.update_ssh(False)
         if self._mcp_worker:
             self._mcp_worker.update_accid(accid)
         if hasattr(self, "settings_panel"):
             field = self.settings_panel._fields.get("ws_accid")
             if field:
                 field.setText(accid)
+            self.settings_panel.refresh_credential_status()
         self.terminal.append_log(f"[系统] {message}: {accid}", "pass")

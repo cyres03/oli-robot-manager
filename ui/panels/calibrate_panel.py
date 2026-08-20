@@ -83,7 +83,7 @@ class CalibratePanel(QWidget):
         input_style = "QLineEdit { background: #FFFFFF; border: 1px solid #E5E6EB; border-radius: 6px; padding: 7px 10px; }"
         self.bl_host_input = QLineEdit(ROBOT_CONFIG.main_control_ip)
         self.bl_user_input = QLineEdit(ROBOT_CONFIG.main_control_user)
-        self.bl_password_input = QLineEdit(ROBOT_CONFIG.main_control_passwords[0])
+        self.bl_password_input = QLineEdit()
         self.bl_password_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.bl_robot_id_input = QLineEdit(ROBOT_CONFIG.ws_accid or "HU_D04_01_121")
         self.bl_runs_input = QLineEdit("1")
@@ -171,10 +171,12 @@ class CalibratePanel(QWidget):
         self._service.start_backlash_workflow(self._backlash_payload())
 
     def _backlash_payload(self) -> dict:
+        password = self.bl_password_input.text()
+        self.bl_password_input.clear()
         payload = {
             "host": self.bl_host_input.text().strip(),
             "username": self.bl_user_input.text().strip(),
-            "password": self.bl_password_input.text(),
+            "password": password,
             "robot_id": self.bl_robot_id_input.text().strip(),
             "target_runs": self.bl_runs_input.text().strip() or "1",
         }

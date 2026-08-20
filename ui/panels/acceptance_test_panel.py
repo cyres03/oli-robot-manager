@@ -1,6 +1,7 @@
 """Acceptance testing workbench for WiFi/SSH-based after-sales checks."""
 import os
 import re
+import shlex
 import time
 import uuid
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ from PyQt6.QtWidgets import (
 
 from config import ROBOT_CONFIG
 from network.wifi_manager import WifiManager
+from services import credential_store
 from ui.panels.log_analyzer_panel import LogAnalyzerPanel
 from ui.panels.power_cycle_panel import PowerCyclePanel
 from workers.ssh_worker import SshWorker
@@ -220,6 +222,9 @@ class LogDownloadWorker(QThread):
 
 
 class AcceptanceTestPanel(QWidget):
+    ssh_connection_changed = pyqtSignal(bool)
+    ssh_authorization_required = pyqtSignal(str, str, str)
+    sudo_password_required = pyqtSignal(str, str, str)
     log_message = pyqtSignal(str, str)
 
     CHECKS = [
@@ -244,6 +249,8 @@ class AcceptanceTestPanel(QWidget):
         self._workers: list[QThread] = []
         self._pending: list[int] = []
         self._running_index: int | None = None
+        self._ssh_retry: tuple[int, AcceptanceCheck, str] | None = None
+        self._pending_time_fix: tuple[int, AcceptanceCheck, str, str] | None = None
         self._build_ui()
         self._populate_checks()
 
@@ -510,25 +517,85 @@ class AcceptanceTestPanel(QWidget):
         detail = body.strip()[:600] or summary
         self._finish_check(row_index, passed, summary, detail)
 
-    def _run_ssh_check(self, row_index: int, check: AcceptanceCheck):
-        worker = self._create_ssh_worker(check.target)
+    def _run_ssh_check(
+        self,
+        row_index: int,
+        check: AcceptanceCheck,
+        robot_id: str = "",
+    ):
+        worker = self._create_ssh_worker(check.target, robot_id)
         worker.set_command(check.command)
         worker.command_finished.connect(lambda exit_code, current_row=row_index, current_check=check, current_worker=worker: self._on_ssh_done(current_row, current_check, exit_code, current_worker.collected_output))
-        worker.error_occurred.connect(lambda error, current_row=row_index: self._finish_check(current_row, False, error, error))
+        worker.authentication_required.connect(
+            lambda host, username, robot_id, current_row=row_index, current_check=check:
+            self._on_ssh_authentication_required(
+                current_row, current_check, host, username, robot_id
+            )
+        )
+        worker.error_occurred.connect(lambda error, current_row=row_index: self._on_ssh_error(current_row, error))
         self._workers.append(worker)
         worker.start()
 
-    def _create_ssh_worker(self, target: str) -> SshWorker:
+    def _on_ssh_authentication_required(
+        self,
+        row_index: int,
+        check: AcceptanceCheck,
+        host: str,
+        username: str,
+        robot_id: str,
+    ):
+        self._ssh_retry = (row_index, check, robot_id)
+        self._set_row(row_index, "等待授权", "需要输入一次 SSH 密码", "")
+        self.ssh_connection_changed.emit(False)
+        self.ssh_authorization_required.emit(host, username, robot_id)
+
+    def finish_ssh_authorization(self, success: bool, detail: str):
+        retry = self._ssh_retry
+        self._ssh_retry = None
+        if not retry:
+            return
+        row_index, check, robot_id = retry
+        if success:
+            if ROBOT_CONFIG.ws_accid != robot_id:
+                detail = (
+                    f"机器人已从 {robot_id} 切换为 {ROBOT_CONFIG.ws_accid}，"
+                    "原检查已取消"
+                )
+                self._finish_check(row_index, False, detail, detail)
+                return
+            self._set_row(row_index, "执行中", "密钥已授权，正在重试...", "")
+            self._run_ssh_check(row_index, check, robot_id)
+            return
+        self._finish_check(row_index, False, detail, detail)
+
+    def _create_ssh_worker(self, target: str, robot_id: str = "") -> SshWorker:
         if target == "main":
-            return SshWorker(ROBOT_CONFIG.main_control_ip, ROBOT_CONFIG.main_control_user, list(ROBOT_CONFIG.main_control_passwords), self)
-        return SshWorker(ROBOT_CONFIG.perception_ip, ROBOT_CONFIG.perception_user, [ROBOT_CONFIG.perception_password], self)
+            return SshWorker(
+                ROBOT_CONFIG.main_control_ip,
+                ROBOT_CONFIG.main_control_user,
+                list(ROBOT_CONFIG.main_control_passwords),
+                self,
+                robot_id=robot_id,
+            )
+        return SshWorker(
+            ROBOT_CONFIG.perception_ip,
+            ROBOT_CONFIG.perception_user,
+            [ROBOT_CONFIG.perception_password],
+            self,
+            robot_id=robot_id,
+        )
 
     def _on_ssh_done(self, row_index: int, check: AcceptanceCheck, exit_code: int, output: str):
+        self.ssh_connection_changed.emit(True)
         if check.key in {"main_time", "perception_time"}:
             self._request_beijing_time(row_index, check, output, verification=False)
             return
         passed, summary = self._evaluate_ssh_output(check, output)
         self._finish_check(row_index, passed, summary, output.strip()[:1200])
+
+    def _on_ssh_error(self, row_index: int, error: str):
+        self.ssh_connection_changed.emit(False)
+        self._finish_check(row_index, False, error, error)
 
     def _request_beijing_time(
         self,
@@ -574,19 +641,115 @@ class AcceptanceTestPanel(QWidget):
         self._set_row(row_index, "执行中", f"{summary}，正在自动校时...", "")
         self._append_detail(f"[校时前] {check.name}\n{output.strip()}\n")
         beijing_time_text = _current_reference_time(reference).strftime("%Y-%m-%d %H:%M:%S")
-        sudo_command = "sudo -S -p ''" if check.target == "perception" else "sudo"
-        command = (
-            f"{sudo_command} timedatectl set-timezone Asia/Shanghai && "
-            f'{sudo_command} date -s "{beijing_time_text}" && '
-            f"{sudo_command} hwclock --systohc && echo __TIME_FIX_OK__"
+        robot_id = ROBOT_CONFIG.ws_accid
+        if check.target == "perception":
+            self._pending_time_fix = (
+                row_index, check, beijing_time_text, robot_id
+            )
+            self._set_row(
+                row_index,
+                "等待密码",
+                "感知机校时需要一次 sudo 密码",
+                "",
+            )
+            self.sudo_password_required.emit(
+                ROBOT_CONFIG.perception_ip,
+                ROBOT_CONFIG.perception_user,
+                robot_id,
+            )
+            return
+
+        self._run_time_fix(
+            row_index,
+            check,
+            beijing_time_text,
+            robot_id,
         )
-        worker = self._create_ssh_worker(check.target)
+
+    def submit_sudo_password(
+        self,
+        password: str,
+        remember: bool = False,
+        from_store: bool = False,
+    ):
+        pending = self._pending_time_fix
+        self._pending_time_fix = None
+        if not pending:
+            return
+        row_index, check, beijing_time_text, robot_id = pending
+        if not password:
+            self._finish_check(
+                row_index,
+                False,
+                "已取消感知机 sudo 密码输入，未执行校时",
+                "感知机时间未修改",
+            )
+            return
+        if ROBOT_CONFIG.ws_accid != robot_id:
+            detail = (
+                f"机器人已从 {robot_id} 切换为 {ROBOT_CONFIG.ws_accid}，"
+                "未执行旧目标校时"
+            )
+            self._finish_check(row_index, False, detail, detail)
+            return
+        self._run_time_fix(
+            row_index,
+            check,
+            beijing_time_text,
+            robot_id,
+            password,
+            remember,
+            from_store,
+        )
+
+    def _run_time_fix(
+        self,
+        row_index: int,
+        check: AcceptanceCheck,
+        beijing_time_text: str,
+        robot_id: str,
+        sudo_password: str = "",
+        remember: bool = False,
+        from_store: bool = False,
+    ):
+        fix_commands = (
+            "timedatectl set-timezone Asia/Shanghai && "
+            f'date -s "{beijing_time_text}" && '
+            "hwclock --systohc"
+        )
+        if check.target == "perception":
+            quoted_commands = shlex.quote(fix_commands)
+            command = (
+                "if ! sudo -S -p '' -v; then "
+                "echo __SUDO_AUTH_FAILED__; exit 40; fi; "
+                f"if sudo -n bash -c {quoted_commands}; then "
+                "echo __TIME_FIX_OK__; else "
+                "echo __TIME_FIX_COMMAND_FAILED__; exit 41; fi"
+            )
+        else:
+            command = (
+                f"sudo bash -c {shlex.quote(fix_commands)} "
+                "&& echo __TIME_FIX_OK__"
+            )
+        worker = self._create_ssh_worker(check.target, robot_id)
         worker.set_command(command)
         if check.target == "perception":
-            worker.set_stdin_text((ROBOT_CONFIG.perception_password + "\n") * 3)
+            worker.set_stdin_text(sudo_password + "\n")
+            worker.set_transient_credential(
+                sudo_password, remember, from_store
+            )
+        sudo_password = ""
         worker.command_finished.connect(
             lambda exit_code, current_row=row_index, current_check=check, current_worker=worker:
-            self._on_time_fixed(current_row, current_check, current_worker.collected_output)
+            self._on_time_fixed(
+                current_row,
+                current_check,
+                exit_code,
+                current_worker.collected_output,
+                robot_id,
+                beijing_time_text,
+                current_worker,
+            )
         )
         worker.error_occurred.connect(
             lambda error, current_row=row_index:
@@ -595,14 +758,52 @@ class AcceptanceTestPanel(QWidget):
         self._workers.append(worker)
         worker.start()
 
-    def _on_time_fixed(self, row_index: int, check: AcceptanceCheck, output: str):
-        if "__TIME_FIX_OK__" not in output:
+    def _on_time_fixed(
+        self,
+        row_index: int,
+        check: AcceptanceCheck,
+        exit_code: int,
+        output: str,
+        robot_id: str,
+        beijing_time_text: str,
+        worker: SshWorker,
+    ):
+        if exit_code != 0 or "__TIME_FIX_OK__" not in output:
             detail = output.strip() or "校时命令未返回成功标记"
+            if check.target == "perception" and self._is_sudo_auth_failure(detail):
+                if worker.stored_credential_invalid:
+                    self.log_message.emit(
+                        "[凭据] 已保存的感知机 sudo 密码失效，已删除",
+                        "warn",
+                    )
+                self._pending_time_fix = (
+                    row_index, check, beijing_time_text, robot_id
+                )
+                self._set_row(
+                    row_index,
+                    "等待密码",
+                    "sudo 密码错误，请重新输入",
+                    "",
+                )
+                self.sudo_password_required.emit(
+                    ROBOT_CONFIG.perception_ip,
+                    ROBOT_CONFIG.perception_user,
+                    robot_id,
+                )
+                return
             self._finish_check(row_index, False, "自动校时失败", detail)
             return
 
+        if check.target == "perception" and worker.credential_saved is not None:
+            self.log_message.emit(
+                "[凭据] 感知机密码已保存到系统凭据管理器"
+                if worker.credential_saved
+                else "[凭据] 系统凭据管理器不可用，密码未保存",
+                "pass" if worker.credential_saved else "warn",
+            )
+
         self._append_detail(f"[自动校时] {check.name}\n{output.strip()}\n")
-        worker = self._create_ssh_worker(check.target)
+        worker = self._create_ssh_worker(check.target, robot_id)
         worker.set_command(TIME_CHECK_COMMAND)
         worker.command_finished.connect(
             lambda exit_code, current_row=row_index, current_check=check, current_worker=worker:
@@ -619,6 +820,8 @@ class AcceptanceTestPanel(QWidget):
         )
         self._workers.append(worker)
         worker.start()
+
+    _is_sudo_auth_failure = staticmethod(SshWorker._is_sudo_auth_failure)
 
     def _on_time_verified(
         self,
@@ -675,7 +878,14 @@ class AcceptanceTestPanel(QWidget):
         self.check_table.item(row_index, 4).setText(summary)
         self.check_table.item(row_index, 5).setText(time_text)
         status_item = self.check_table.item(row_index, 3)
-        color_map = {"PASS": "#00B42A", "FAIL": "#F53F3F", "执行中": "#FF7D00", "待执行": "#86909C"}
+        color_map = {
+            "PASS": "#00B42A",
+            "FAIL": "#F53F3F",
+            "执行中": "#FF7D00",
+            "等待授权": "#FF7D00",
+            "等待密码": "#FF7D00",
+            "待执行": "#86909C",
+        }
         status_item.setForeground(Qt.GlobalColor.black)
         status_item.setBackground(QColor(color_map.get(status, "#F2F3F5")))
 

@@ -36,7 +36,46 @@ class WifiManager:
 
     @staticmethod
     def _get_all_interfaces() -> list[dict]:
-        """Parse all WiFi interfaces from netsh output (supports both Chinese and English Windows)."""
+        """Return connected WiFi interfaces on the current platform."""
+        if platform.system() == "Linux":
+            stdout = _run([
+                "nmcli", "-t", "--escape", "no",
+                "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status",
+            ])
+            ifaces = []
+            for line in stdout.splitlines():
+                parts = line.split(":", 3)
+                if len(parts) != 4 or parts[1] != "wifi" or parts[2] != "connected":
+                    continue
+                device = parts[0]
+                ssid = parts[3]
+                signal = 0
+                access_points = _run([
+                    "nmcli", "-t", "--escape", "no",
+                    "-f", "IN-USE,SSID,SIGNAL", "device", "wifi", "list",
+                    "ifname", device,
+                ])
+                for access_point in access_points.splitlines():
+                    if not access_point.startswith("*:"):
+                        continue
+                    active_parts = access_point.split(":", 2)
+                    if len(active_parts) == 3:
+                        ssid = active_parts[1]
+                        signal = int(active_parts[2]) if active_parts[2].isdigit() else 0
+                    break
+                ifaces.append({
+                    "name": device,
+                    "ssid": ssid,
+                    "description": "",
+                    "state": "connected",
+                    "signal": signal,
+                })
+            return ifaces
+
+        if platform.system() != "Windows":
+            return []
+
+        # Parse netsh output in both Chinese and English Windows.
         stdout = _run(["netsh", "wlan", "show", "interfaces"])
         # Split by interface blocks: each block starts with a name line
         blocks = re.split(r"\n\s*\n", stdout)
@@ -72,8 +111,7 @@ class WifiManager:
     def get_current_ssid() -> Optional[str]:
         """Return the robot SSID if any interface is connected to robot WiFi, else the first connected SSID."""
         try:
-            if platform.system() == "Windows":
-                return WifiManager._windows_get_ssid()
+            return WifiManager._windows_get_ssid()
         except Exception:
             pass
         return None

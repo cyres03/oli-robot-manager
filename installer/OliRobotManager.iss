@@ -1,8 +1,16 @@
 #define MyAppName "Oli Robot Manager"
+#ifndef MyAppVersion
 #define MyAppVersion "1.0.1"
+#endif
 #define MyAppPublisher "Limx"
 #define MyAppExeName "OliRobotManager.exe"
-#define MyAppSourceDir "..\\dist\\OliRobotManager"
+#define MyAppSourceDir "..\\dist\\windows\\OliRobotManager"
+#ifndef MyAppOutputDir
+#define MyAppOutputDir "..\\release\\windows"
+#endif
+#ifndef MyAppOutputBaseFilename
+#define MyAppOutputBaseFilename "OliRobotManager-Windows-x64-Setup-v1.0.1"
+#endif
 
 [Setup]
 AppId={{E3AFA760-8C8B-4F8A-8B7F-0B0EB9E4D8E8}
@@ -12,8 +20,8 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-OutputDir=Output
-OutputBaseFilename=OliRobotManager-Setup
+OutputDir={#MyAppOutputDir}
+OutputBaseFilename={#MyAppOutputBaseFilename}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
