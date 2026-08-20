@@ -55,6 +55,11 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q .
 
+      - name: Run automated tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q
+
       - name: Import application modules
         run: >-
           python -c "import app, main;

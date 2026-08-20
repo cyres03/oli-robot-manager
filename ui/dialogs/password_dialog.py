@@ -1,4 +1,6 @@
 """Password prompt with optional secure OS credential storage."""
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -14,8 +16,51 @@ from services import credential_store
 class PasswordDialog(QDialog):
     def __init__(self, title: str, prompt: str, parent=None):
         super().__init__(parent)
+        self.setObjectName("passwordDialog")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor("#FFFFFF"))
+        self.setPalette(palette)
+        self.setAutoFillBackground(True)
         self.setWindowTitle(title)
         self.setMinimumWidth(460)
+        self.setStyleSheet("""
+            QDialog#passwordDialog {
+                background-color: #FFFFFF;
+                color: #1D2129;
+            }
+            QDialog#passwordDialog QLabel,
+            QDialog#passwordDialog QCheckBox {
+                background-color: transparent;
+                color: #1D2129;
+            }
+            QDialog#passwordDialog QLineEdit {
+                min-height: 38px;
+                background-color: #F7F8FA;
+                color: #1D2129;
+                border: 1px solid #C9CDD4;
+                border-radius: 6px;
+                padding: 6px 10px;
+            }
+            QDialog#passwordDialog QLineEdit:focus {
+                background-color: #FFFFFF;
+                border-color: #6C5CE7;
+            }
+            QDialog#passwordDialog QPushButton {
+                min-width: 88px;
+                min-height: 34px;
+                background-color: #FFFFFF;
+                color: #1D2129;
+                border: 1px solid #C9CDD4;
+                border-radius: 6px;
+                padding: 4px 14px;
+            }
+            QDialog#passwordDialog QPushButton:hover {
+                background-color: #F2F3F5;
+                border-color: #A9AEB8;
+            }
+        """)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 18)
