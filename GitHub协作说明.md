@@ -77,14 +77,17 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-Copy-Item .\config.example.json .\config.local.json
 ```
 
-将负责人私下提供的机器人连接参数填入 `config.local.json`，然后启动：
+默认机器人地址已经内置，不需要复制 `config.example.json`。直接启动：
 
 ```powershell
 python main.py
 ```
+
+连接机器人 WiFi 后进入“验收测试”运行自动检查。首次 SSH 项会弹出当前机器人账号的密码输入框，授权本机 SSH 公钥后自动重试原检查；可选将密码保存到 Windows Credential Manager / Linux Secret Service。
+
+只有需要覆盖默认地址或兼容旧部署时才创建 `config.local.json`，真实密码仍不得提交到 Git。
 
 需要 Backlash 功能时执行：
 

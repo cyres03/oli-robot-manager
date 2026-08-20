@@ -11,7 +11,8 @@ Oli Robot Manager 是面向机器人售后、入库和交付验收的 PyQt6 桌�
 | 私有仓库 | [cyres03/oli-robot-manager](https://github.com/cyres03/oli-robot-manager) |
 | 仓库负责人 | `cyres03` |
 | 默认分支 | `main` |
-| 源码基线 | `5127507`（2026-08-04） |
+| 当前版本 | `1.0.1` |
+| 最新迭代 | [跨平台迭代说明 2026-08-20](更新说明-跨平台-20260820.md) |
 
 首次获取源码：
 
@@ -30,14 +31,14 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-Copy-Item .\config.example.json .\config.local.json
 python main.py
 ```
 
-请向仓库负责人单独获取机器人连接参数，填写到 `config.local.json`。该文件已被 Git 忽略，禁止提交凭据。
+默认机器人地址已经内置，不需要创建 `config.local.json`。连接机器人 WiFi 后，直接在“验收测试”运行自动检查；首次 SSH 检查会提示输入当前机器人账号密码，并在授权成功后自动继续。
 
-也可在软件首次提示时输入密码并勾选“记住到系统凭据管理器”。Windows 使用
+可在密码弹窗勾选“记住到系统凭据管理器”。Windows 使用
 Credential Manager，Linux 使用 Secret Service；凭据按机器人隔离，不写入仓库。
+只有需要覆盖默认地址或兼容旧部署时，才使用 `config.example.json` 创建本地配置。
 
 如需开发 Backlash 回差检测功能，再执行：
 
@@ -54,6 +55,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup_backlash_resource.ps1
 - [SDK 按钮逻辑与 joystick 映射说明](SDK按钮逻辑与joystick映射说明.md)
 - [发布说明](发布说明.md)
 - [Linux 更新说明](更新说明-Linux-20260819.md)
+- [跨平台迭代说明](更新说明-跨平台-20260820.md)
 - [敏捷开发流程](敏捷开发流程.md)
 
 ## 协作原则
