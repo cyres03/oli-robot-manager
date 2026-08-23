@@ -34,6 +34,7 @@ class StatusBanner(QFrame):
 
         # Robot SN
         self.sn_label = self._make_label("", "#6C5CE7", 14, 700)
+        layout.addWidget(self.sn_label)
 
         # Status pill
         self.status_pill = QFrame()
