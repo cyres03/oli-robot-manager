@@ -131,6 +131,8 @@ class RobotClient:
     def _send_request_with_notify(
         self, title: str, data: dict, notify_title: str, timeout: float = 120.0
     ) -> (dict, dict):
+        self._require_target()
+
         async def _do():
             async with websockets.connect(self.ws_url) as ws:
                 guid = uuid.uuid4().hex[:32]
