@@ -29,6 +29,13 @@ def test_robot_client_rejects_unresolved_target_before_connect(monkeypatch):
     with pytest.raises(RuntimeError, match="未识别机器人"):
         client._send_command("request_set_walk_vel")
 
+    with pytest.raises(RuntimeError, match="未识别机器人"):
+        client._send_request_with_notify(
+            "request_calibrate",
+            {},
+            "notify_calibrate",
+        )
+
     assert connect_calls == []
 
 
