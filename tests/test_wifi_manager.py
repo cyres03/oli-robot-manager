@@ -93,3 +93,21 @@ def test_windows_scan_uses_disconnected_wifi_adapter(monkeypatch):
     assert WifiManager._windows_scan() == [
         {"ssid": "HU_L04_01_091_5G", "signal": 75, "security": "WPA2"},
     ]
+
+
+def test_connected_robot_ssids_include_all_adapters(monkeypatch):
+    monkeypatch.setattr(
+        WifiManager,
+        "_get_all_interfaces",
+        staticmethod(lambda: [
+            {"ssid": "office", "state": "connected"},
+            {"ssid": "HU_L04_01_091_5G", "state": "connected"},
+            {"ssid": "HU_D04_01_121_5G", "state": "connected"},
+            {"ssid": "HU_L04_01_091_5G", "state": "connected"},
+        ]),
+    )
+
+    assert WifiManager.get_connected_robot_ssids() == [
+        "HU_L04_01_091_5G",
+        "HU_D04_01_121_5G",
+    ]

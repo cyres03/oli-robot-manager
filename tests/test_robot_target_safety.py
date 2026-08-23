@@ -8,8 +8,11 @@ from workers.mcp_worker import McpWorker
 
 
 def test_detection_returns_no_target_instead_of_default_oli(monkeypatch):
-    monkeypatch.setattr(config, "detect_accid_from_robot_portal", lambda: None)
-    monkeypatch.setattr(WifiManager, "get_robot_ssid", staticmethod(lambda: None))
+    monkeypatch.setattr(
+        WifiManager,
+        "get_connected_robot_ssids",
+        staticmethod(lambda: []),
+    )
 
     assert config.detect_accid_from_wifi() is None
 

@@ -127,15 +127,23 @@ class WifiManager:
     @staticmethod
     def get_robot_ssid() -> Optional[str]:
         """Get the robot SSID from any connected interface."""
+        connected = WifiManager.get_connected_robot_ssids()
+        return connected[0] if connected else None
+
+    @staticmethod
+    def get_connected_robot_ssids() -> list[str]:
+        """Return unique robot SSIDs connected across all WiFi adapters."""
         try:
             pattern = WifiManager._get_pattern()
+            connected = []
             for iface in WifiManager._get_all_interfaces():
                 ssid = iface.get("ssid", "")
-                if ssid and pattern.match(ssid):
-                    return ssid
+                if ssid and pattern.match(ssid) and ssid not in connected:
+                    connected.append(ssid)
+            return connected
         except Exception:
             pass
-        return None
+        return []
 
     @staticmethod
     def connect_to_wifi(ssid: str, password: str) -> bool:

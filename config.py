@@ -1,9 +1,14 @@
 import json
 import os
-import re
 from dataclasses import dataclass, field
 
 import httpx
+from models.robot_profile import (
+    RobotIdentity,
+    RobotProfile,
+    extract_robot_accid,
+    resolve_robot_identity,
+)
 
 
 LOCAL_CONFIG_PATH = os.environ.get(
@@ -55,27 +60,6 @@ def _router_admin_password() -> str:
     return password or _local_secret("wifi_password", "OLI_WIFI_PASSWORD")
 
 
-def _normalize_robot_identifier(value: str) -> str:
-    return re.sub(r"(?:_(?:5G|2\.4G))$", "", value.strip(), flags=re.IGNORECASE)
-
-
-def extract_robot_accid(text: str) -> str | None:
-    if not text:
-        return None
-
-    normalized = _normalize_robot_identifier(text)
-    patterns = [
-        r"(HU_[A-Z0-9]+(?:_[A-Z0-9]+){1,3})",
-        r"(WF_TRON2[A-Z]?_\d+)",
-        r"(WF_[A-Z0-9]+(?:_[A-Z0-9]+)+)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, normalized, flags=re.IGNORECASE)
-        if match:
-            return match.group(1)
-    return None
-
-
 def detect_accid_from_robot_portal(timeout: float = 2.0) -> str | None:
     try:
         response = httpx.get("http://10.192.1.2:8080/get_robot_info", timeout=timeout, follow_redirects=True)
@@ -106,6 +90,17 @@ def detect_accid_from_robot_portal(timeout: float = 2.0) -> str | None:
     return None
 
 
+def detect_robot_identity(timeout: float = 2.0) -> RobotIdentity:
+    from network.wifi_manager import WifiManager
+
+    connected_ssids = WifiManager.get_connected_robot_ssids()
+    if not connected_ssids:
+        return resolve_robot_identity((), None)
+
+    portal_accid = detect_accid_from_robot_portal(timeout=timeout)
+    return resolve_robot_identity(connected_ssids, portal_accid)
+
+
 def detect_accid_from_wifi() -> str | None:
     """Auto-detect robot accid from WiFi or robot info portal.
 
@@ -114,21 +109,8 @@ def detect_accid_from_wifi() -> str | None:
     HU_D04_01_303_2.4G -> HU_D04_01_303
     WF_TRON2A_001 -> WF_TRON2A_001
     """
-    accid = detect_accid_from_robot_portal()
-    if accid:
-        return accid
-
-    try:
-        from network.wifi_manager import WifiManager
-        ssid = WifiManager.get_robot_ssid()
-        if ssid:
-            accid = extract_robot_accid(ssid)
-            if accid:
-                return accid
-    except Exception:
-        pass
-
-    return None
+    identity = detect_robot_identity()
+    return identity.accid if identity.ready else None
 
 
 @dataclass
@@ -161,6 +143,53 @@ class RobotConfig:
     imu_tolerance_hz: float = 20.0
     power_cycle_countdown_seconds: int = 300
     cpu_fix_max_retries: int = 3
+    active_profile: RobotProfile | None = field(default=None, repr=False)
+    profile_key: str = ""
+    model_name: str = "未识别"
+    portal_url: str = "http://10.192.1.2:8080"
+    logs_url: str = "http://10.192.1.2:8090"
+    mcp_supported: bool = False
+    expected_motor_count: int | None = None
+    allow_cpu_repair: bool = False
+    allow_time_repair: bool = False
+
+    def apply_identity(self, identity: RobotIdentity) -> bool:
+        if not identity.ready or not identity.accid or not identity.profile:
+            self.clear_identity()
+            return False
+
+        profile = identity.profile
+        companion = profile.companion_nodes[0] if profile.companion_nodes else None
+        self.active_profile = profile
+        self.profile_key = profile.key
+        self.model_name = profile.display_name
+        self.ws_accid = identity.accid
+        self.main_control_ip = profile.main_node.host
+        self.main_control_user = profile.main_node.username
+        if companion:
+            self.perception_ip = companion.host
+            self.perception_user = companion.username
+            self.expected_cpu_cores = companion.expected_cpu_cores or self.expected_cpu_cores
+        self.portal_url = profile.service("portal").url or ""
+        self.logs_url = profile.service("logs").url or ""
+        self.websocket_url = profile.service("websocket").url or ""
+        self.mcp_url = profile.service("mcp").url or ""
+        self.mcp_supported = profile.service("mcp").supported
+        self.expected_motor_count = profile.expected_motor_count
+        self.expected_imu_hz = profile.expected_imu_hz
+        self.allow_cpu_repair = profile.allow_cpu_repair
+        self.allow_time_repair = profile.allow_time_repair
+        return True
+
+    def clear_identity(self):
+        self.active_profile = None
+        self.profile_key = ""
+        self.model_name = "未识别"
+        self.ws_accid = ""
+        self.mcp_supported = False
+        self.expected_motor_count = None
+        self.allow_cpu_repair = False
+        self.allow_time_repair = False
 
 
 @dataclass
