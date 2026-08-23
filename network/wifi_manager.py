@@ -84,24 +84,19 @@ class WifiManager:
             if not block.strip():
                 continue
             # Match field:value pairs - fields can be Chinese or English
-            ssid_m = re.search(r"SSID\s*:\s*(.+)", block)
-            if not ssid_m:
+            name_m = re.search(r"^\s*(?:Name|名称)\s*:\s*(.+)$", block, re.MULTILINE)
+            if not name_m:
                 continue
-            name_m = re.search(r"(?:Name|名称)\s*:\s*(.+)", block)
-            signal_m = re.search(r"(?:Signal|信号)\s*:\s*(\d+)%", block)
-            state_m = re.search(r"(?:State|状态)\s*:\s*(.+)", block)
-            desc_m = re.search(r"(?:Description|说明)\s*:\s*(.+)", block)
+            ssid_m = re.search(r"^\s*SSID\s*:\s*(.*)$", block, re.MULTILINE)
+            signal_m = re.search(r"^\s*(?:Signal|信号)\s*:\s*(\d+)%", block, re.MULTILINE)
+            state_m = re.search(r"^\s*(?:State|状态)\s*:\s*(.+)$", block, re.MULTILINE)
+            desc_m = re.search(r"^\s*(?:Description|说明)\s*:\s*(.+)$", block, re.MULTILINE)
+            state = state_m.group(1).strip() if state_m else ""
             iface = {
-                "name": name_m.group(1).strip() if name_m else "unknown",
-                "ssid": ssid_m.group(1).strip(),
+                "name": name_m.group(1).strip(),
+                "ssid": ssid_m.group(1).strip() if ssid_m else "",
                 "description": desc_m.group(1).strip() if desc_m else "",
-                "state": (
-                    "connected"
-                    if state_m and (
-                        "connected" in state_m.group(1).lower() or "已连接" in state_m.group(1)
-                    )
-                    else "disconnected"
-                ),
+                "state": "connected" if state.lower() == "connected" or state == "已连接" else "disconnected",
                 "signal": int(signal_m.group(1)) if signal_m else 0,
             }
             ifaces.append(iface)
@@ -312,7 +307,10 @@ class WifiManager:
 
     @staticmethod
     def _linux_scan() -> list[dict]:
-        stdout = _run(["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi", "list"])
+        stdout = _run([
+            "nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY",
+            "dev", "wifi", "list", "--rescan", "yes",
+        ])
         networks = []
         for line in stdout.splitlines():
             parts = line.split(":")

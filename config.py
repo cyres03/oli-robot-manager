@@ -148,6 +148,7 @@ class RobotConfig:
     )
     wifi_ssid_patterns: tuple[str, ...] = (
         "HU_D",
+        "HU_L04_01",
         "WF_TRON2A",
         "WF_TRON2",
         "WF_",
