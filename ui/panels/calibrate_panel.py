@@ -85,7 +85,7 @@ class CalibratePanel(QWidget):
         self.bl_user_input = QLineEdit(ROBOT_CONFIG.main_control_user)
         self.bl_password_input = QLineEdit()
         self.bl_password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.bl_robot_id_input = QLineEdit(ROBOT_CONFIG.ws_accid or "HU_D04_01_121")
+        self.bl_robot_id_input = QLineEdit(ROBOT_CONFIG.ws_accid)
         self.bl_runs_input = QLineEdit("1")
         for line_edit in (self.bl_host_input, self.bl_user_input, self.bl_password_input, self.bl_robot_id_input, self.bl_runs_input):
             line_edit.setStyleSheet(input_style)

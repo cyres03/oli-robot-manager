@@ -20,7 +20,7 @@ class McpWorker(QThread):
     tool_error = pyqtSignal(str, str)
     mcp_connected = pyqtSignal(bool)
 
-    def __init__(self, ws_url: str, accid: str, parent=None):
+    def __init__(self, ws_url: str, accid: str | None, parent=None):
         super().__init__(parent)
         self.client = RobotClient(ws_url, accid)
         self._pending_requests: list[tuple[str, dict]] = []
@@ -28,6 +28,11 @@ class McpWorker(QThread):
         self._last_action_status_requested_at = 0.0
 
     def call_tool(self, tool_name: str, arguments: dict):
+        if not self.client.accid:
+            self.tool_error.emit(tool_name, "未识别机器人，命令未发送")
+            self.mcp_connected.emit(False)
+            return
+
         if tool_name == "set_walk_velocity":
             self._pending_requests = [
                 item for item in self._pending_requests if item[0] != "set_walk_velocity"
@@ -52,7 +57,7 @@ class McpWorker(QThread):
 
     def run(self):
         try:
-            self.mcp_connected.emit(True)
+            self.mcp_connected.emit(bool(self.client.accid))
             while self._running and not self.isInterruptionRequested():
                 if self._pending_requests:
                     tool_name, args = self._pending_requests.pop(0)
@@ -66,9 +71,12 @@ class McpWorker(QThread):
         except Exception as e:
             self.tool_error.emit("connect", str(e))
 
-    def update_accid(self, accid: str):
+    def update_accid(self, accid: str | None):
         """Update accid when switching robots — thread-safe."""
         self.client.update_accid(accid)
+        if not self.client.accid:
+            self._pending_requests.clear()
+        self.mcp_connected.emit(bool(self.client.accid))
 
     def stop(self):
         self._running = False

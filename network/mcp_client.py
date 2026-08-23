@@ -40,13 +40,17 @@ def _is_walk_mode_ok(data: dict) -> bool:
 class RobotClient:
     """Synchronous wrapper around WebSocket for robot commands."""
 
-    def __init__(self, ws_url: str, accid: str):
+    def __init__(self, ws_url: str, accid: str | None):
         self.ws_url = ws_url
-        self.accid = accid
+        self.accid = accid or ""
 
-    def update_accid(self, accid: str):
+    def update_accid(self, accid: str | None):
         """Update accid when switching to a different robot."""
-        self.accid = accid
+        self.accid = accid or ""
+
+    def _require_target(self):
+        if not self.accid:
+            raise RuntimeError("未识别机器人，已阻止发送控制请求")
 
     def _audit(self, event: str, title: str, guid: str, data: dict | None = None, result: dict | None = None):
         try:
@@ -67,6 +71,8 @@ class RobotClient:
             pass
 
     def _send_request(self, title: str, data: dict | None = None, timeout: float = 10.0) -> dict:
+        self._require_target()
+
         async def _do():
             async with websockets.connect(self.ws_url) as ws:
                 guid = uuid.uuid4().hex[:32]
@@ -91,6 +97,8 @@ class RobotClient:
         return asyncio.run(_do())
 
     def _send_command(self, title: str, data: dict | None = None, failure_timeout: float = 0.3) -> dict:
+        self._require_target()
+
         async def _do():
             async with websockets.connect(self.ws_url) as ws:
                 guid = uuid.uuid4().hex[:32]

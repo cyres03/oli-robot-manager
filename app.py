@@ -25,7 +25,7 @@ class Application(QObject):
         # 2. Auto-detect accid from connected WiFi
         from config import detect_accid_from_wifi
         accid = detect_accid_from_wifi()
-        ROBOT_CONFIG.ws_accid = accid
+        ROBOT_CONFIG.ws_accid = accid or ""
 
         # 3. Create workers
         self.mcp_worker = McpWorker(ROBOT_CONFIG.websocket_url, accid)
