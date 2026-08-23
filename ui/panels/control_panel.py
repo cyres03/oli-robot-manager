@@ -566,7 +566,7 @@ class ControlPanel(QWidget):
         """持续发送行走指令10秒后自动停止。自动使用当前检测到的 accid。"""
         from config import detect_accid_from_wifi
         accid = detect_accid_from_wifi()
-        if not accid or accid == "HU_D04_01_001":
+        if not accid:
             self.result_display.setText("错误: 未检测到机器人WiFi连接")
             return
 

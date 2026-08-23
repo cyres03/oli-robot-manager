@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 import httpx
 
 
-DEFAULT_ACCID = "HU_D04_01_001"
 LOCAL_CONFIG_PATH = os.environ.get(
     "OLI_CONFIG_PATH",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.local.json"),
@@ -107,7 +106,7 @@ def detect_accid_from_robot_portal(timeout: float = 2.0) -> str | None:
     return None
 
 
-def detect_accid_from_wifi() -> str:
+def detect_accid_from_wifi() -> str | None:
     """Auto-detect robot accid from WiFi or robot info portal.
 
     Examples:
@@ -129,14 +128,14 @@ def detect_accid_from_wifi() -> str:
     except Exception:
         pass
 
-    return DEFAULT_ACCID
+    return None
 
 
 @dataclass
 class RobotConfig:
     mcp_url: str = "http://10.192.1.2:18080/mcp"
     websocket_url: str = "ws://10.192.1.2:5000"
-    ws_accid: str = "HU_D04_01_121"
+    ws_accid: str = ""
     ollama_url: str = "http://10.192.1.3:11434/api/generate"
     main_control_user: str = "limx"
     main_control_ip: str = "10.192.1.2"
