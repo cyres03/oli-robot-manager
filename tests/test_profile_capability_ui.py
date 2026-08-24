@@ -40,9 +40,10 @@ def test_oli_control_panel_preserves_existing_commands(qtbot):
     assert panel._tool_buttons["audio_wakeup_enable"].isEnabled()
 
 
-def test_l04_dance_library_is_query_only(qtbot):
+def test_l04_dance_library_is_query_only(qtbot, monkeypatch):
     worker = _worker(L04_PROFILE)
     service = DanceService(worker)
+    monkeypatch.setattr(service, "get_count", lambda _name: 0)
     panel = DanceLibraryPanel(service)
     qtbot.addWidget(panel)
 
