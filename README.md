@@ -25,12 +25,42 @@ cd oli-robot-manager
 
 ## 快速开始
 
+### Windows
+
 ```powershell
 python -m venv .venv
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+python main.py
+```
+
+### Linux（Ubuntu 22.04）
+
+首次运行：
+
+```bash
+sudo apt update
+sudo apt install -y python3-venv libxcb-cursor0 libxcb-xinerama0 libxkbcommon-x11-0 network-manager openssh-client
+git clone https://github.com/cyres03/oli-robot-manager.git
+cd oli-robot-manager
+chmod +x scripts/linux_setup.sh scripts/linux_run.sh
+./scripts/linux_setup.sh
+./scripts/linux_run.sh
+```
+
+后续启动：
+
+```bash
+cd oli-robot-manager
+./scripts/linux_run.sh
+```
+
+也可以直接使用虚拟环境运行：
+
+```bash
+source .venv/bin/activate
 python main.py
 ```
 
