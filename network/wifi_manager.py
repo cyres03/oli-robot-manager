@@ -157,6 +157,34 @@ class WifiManager:
         return False
 
     @staticmethod
+    def disconnect_robot_networks_except(selected_ssid: str) -> bool:
+        """Disconnect other robot WiFi links so shared robot IPs stay unambiguous."""
+        pattern = WifiManager._get_pattern()
+        success = True
+        system = platform.system()
+        for iface in WifiManager._get_all_interfaces():
+            ssid = iface.get("ssid", "")
+            name = iface.get("name", "")
+            if not name or not ssid or ssid == selected_ssid or not pattern.match(ssid):
+                continue
+            try:
+                if system == "Linux":
+                    subprocess.run(
+                        ["nmcli", "device", "disconnect", name],
+                        check=True, capture_output=True, **_no_window(),
+                    )
+                elif system == "Windows":
+                    subprocess.run(
+                        ["netsh", "wlan", "disconnect", f"interface={name}"],
+                        check=True, capture_output=True, **_no_window(),
+                    )
+                else:
+                    success = False
+            except (OSError, subprocess.CalledProcessError):
+                success = False
+        return success
+
+    @staticmethod
     def _windows_connect(ssid: str, password: str) -> bool:
         import tempfile, os, time
 

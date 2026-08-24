@@ -9,7 +9,12 @@ class ConnectionService(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._status = {"wifi": False, "mcp": False, "ws": False, "ssh": False}
+        self._status: dict[str, bool | None] = {
+            "wifi": False,
+            "mcp": False,
+            "ws": False,
+            "ssh": False,
+        }
         self._network = QNetworkAccessManager(self)
         self._network.finished.connect(self._on_mcp_reply)
 
@@ -17,7 +22,7 @@ class ConnectionService(QObject):
         self._status["wifi"] = connected
         self.status_changed.emit(dict(self._status))
 
-    def update_mcp(self, connected: bool):
+    def update_mcp(self, connected: bool | None):
         self._status["mcp"] = connected
         self.status_changed.emit(dict(self._status))
 
@@ -46,4 +51,4 @@ class ConnectionService(QObject):
 
     @property
     def all_connected(self) -> bool:
-        return all(self._status.values())
+        return all(value for value in self._status.values() if value is not None)

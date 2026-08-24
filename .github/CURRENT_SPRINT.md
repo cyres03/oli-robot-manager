@@ -1,53 +1,67 @@
-# Sprint 1：建立可持续的单人产品维护体系
+# Sprint 2：完成 Oli/Luna 双工作区基础
 
-- 周期：2026-08-20 至 2026-08-26
+- 周期：2026-08-23 至 2026-08-29
 - Product Owner / Developer / Reviewer：cyres03
-- 真机操作人员：cyres03（需要真机时）
-- 发布目标：不发布
+- 真机操作人员：cyres03
+- 发布目标：Cross-platform，不创建正式 Tag
 
 ## Sprint Goal
 
-建立一套独立维护者每周可以重复执行的产品路线、Backlog、Issue、PR、测试和发布流程。
+软件能自动识别 D04/L04 并进入 Oli/Luna 独立工作区，安全加载对应节点、资源和
+已验证能力；两个产品不共享运行时资源状态，Oli 现有功能不回归。
 
 ## 承诺工作项
 
 | Issue | 类型 | 故事点 | 平台 | 状态 |
 |-------|------|--------|------|------|
-| #6 | Story | 3 | Cross-platform | In Progress |
+| #17 | Bug | 3 | Cross-platform | Done |
+| #20 | Bug | 1 | Cross-platform | Done |
+| #22 | Bug | 1 | Cross-platform | Done |
+| #18 | Story | 5 | Cross-platform | In Progress |
 
-总故事点：3
+当前 WIP：#18（1 项）
+
+## 旧功能基线
+
+- 未连接时可主动发现机器人 WiFi：#12 Done。
+- 身份失败不使用默认 Oli 目标：#17 Done。
+- 三类 WebSocket 请求均执行无目标门禁：#20 Done。
+- 顶部状态栏能够显示现有 Oli SN：#22 Done。
 
 ## 本次不做
 
-- 不开发新的机器人业务功能
-- 不创建 `v1.0.1` Tag
-- 不执行运动、校零、断电或 Backlash
-- 不申请额外 GitHub Project 权限
+- 不执行运动、模式切换、动作、校零、Backlash、灯效或语音设置。
+- 不开放 claw、UB/WB 等返回 `fail_no_data` 的能力。
+- 不把现有 PyQt6 应用重写为 Electron/React。
+- 不创建正式发布 Tag。
 
-## 风险与依赖
+## 后续顺序
 
-| 风险或依赖 | 影响 | 缓解措施 |
-|------------|------|----------|
-| 独立维护者容易同时启动多个功能 | 大量半成品和上下文切换 | WIP 固定为 1，每周只承诺一个 Goal |
-| 缺少真实验收耗时基线 | 无法判断产品是否真的提效 | 从下一次验收开始记录耗时和人工操作次数 |
-| 正式平台资产尚未发布 | 同事试用门槛仍高 | 下一 Sprint 优先完成 v1.0.1 发布检查 |
+1. #24：Luna `.2/.4` 测试用例执行器。
+2. #25：自动读取日志并诊断错误，结果关联测试会话。
+3. #26：参考 LimX Studio 的 Electron/React 渐进迁移 Spike。
+
+## 前端参考
+
+参考本机 LimX Studio 0.1.35 的工作台信息架构和组件语义：Electron 38、React、
+shadcn/Radix、Tailwind CSS 4、Zustand、React Router 和 Lucide。本 Sprint 保留
+PyQt6，只借鉴紧凑工作台、清晰状态和能力驱动交互；技术栈迁移另立 Spike。
 
 ## 真机计划
 
-本 Sprint 无真机操作。
+| Issue | 机器人型号 / ACCID | 固件 | 安全工况 | 允许操作 |
+|-------|-------------------|------|----------|----------|
+| #18 | HU_L04_01_091 | robot-luna-r-1.2.12.20260821201520 | 机器人静止 | 被动状态、HTTP、SSH 只读、4 项查询 |
 
 ## Sprint Review
 
-- Sprint Goal：达成
-- 已完成故事点：3
-- 结转故事点：0
-- 演示：从路线图选择 Issue，按手册创建分支、PR 和发布判断
-- 交付物：单人敏捷维护手册、产品路线图、标签体系、两个版本里程碑、首批产品 Backlog
-- Windows 发布结果：不适用
-- Linux 发布结果：不适用
+- Sprint Goal：待 Review
+- 自动化测试：待 PR 最终记录
+- Linux 真机：启动与四项只读查询已完成，结果待写入 PR
+- Windows：由 CI 验证，目标机器冒烟测试后续安排
 
 ## Retrospective
 
-- Keep：Issue 先写验收标准，PR 由双平台 CI 验证
-- Stop：在没有 Issue 的情况下直接修改源码
-- Try：下一 Sprint 保持 WIP=1，只完成 v1.0.1 发布准备
+- Keep：新需求前先修复受影响旧功能。
+- Stop：以接口标题存在代替行为和安全验收。
+- Try：下一 Sprint 为 L04 控制能力逐类建立独立真机 Story。

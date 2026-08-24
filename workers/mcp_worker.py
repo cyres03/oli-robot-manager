@@ -89,9 +89,12 @@ class McpWorker(QThread):
         self,
         accid: str | None,
         allowed_tools: frozenset[str] | None,
+        ws_url: str | None = None,
     ):
         """Atomically switch identity and capabilities, dropping stale commands."""
         self._pending_requests.clear()
+        if ws_url:
+            self.client.ws_url = ws_url
         self.client.update_accid(accid)
         self._allowed_tools = allowed_tools
         self.mcp_connected.emit(bool(self.client.accid))

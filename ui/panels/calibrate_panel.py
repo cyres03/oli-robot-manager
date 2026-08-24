@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSignal
 from config import ROBOT_CONFIG
+from models.robot_profile import CapabilityState, RobotProfile
 from services.calibrate_service import CalibrateService
 
 
@@ -15,6 +16,8 @@ class CalibratePanel(QWidget):
     def __init__(self, calibrate_service: CalibrateService, parent=None):
         super().__init__(parent)
         self._service = calibrate_service
+        self._calibration_enabled = True
+        self._backlash_enabled = True
         self._build_ui()
         self._connect_signals()
 
@@ -164,6 +167,24 @@ class CalibratePanel(QWidget):
         self._service.backlash_launched.connect(
             lambda path: self.result_log.append(f"[backlash] 已启动: {path}"))
 
+    def apply_profile(self, profile: RobotProfile | None):
+        self._calibration_enabled = bool(
+            profile and profile.capability("calibration") == CapabilityState.SUPPORTED
+        )
+        self._backlash_enabled = bool(
+            profile and profile.capability("backlash") == CapabilityState.SUPPORTED
+        )
+        self.ws_calibrate_btn.setEnabled(self._calibration_enabled)
+        for button in (
+            self.bl_connect_btn, self.bl_start_btn, self.bl_refresh_btn,
+            self.bl_download_btn, self.bl_disconnect_btn,
+        ):
+            button.setEnabled(self._backlash_enabled)
+        if profile and not self._calibration_enabled:
+            self.result_log.setPlainText(
+                f"{profile.display_name} 的校零与 Backlash 尚未完成真机验证，当前已锁定。"
+            )
+
     def _connect_backlash(self):
         self._service.connect_backlash_console(self._backlash_payload())
 
@@ -188,8 +209,12 @@ class CalibratePanel(QWidget):
         results = state.get("results") or []
         result_count = len(results)
         self.bl_state_label.setText(f"状态: {session_state} | 当前步骤: {active_step} | 本轮结果: {result_count}")
-        self.bl_start_btn.setEnabled(session_state in {"ready", "completed", "failed"})
-        self.bl_disconnect_btn.setEnabled(session_state != "disconnected")
+        self.bl_start_btn.setEnabled(
+            self._backlash_enabled and session_state in {"ready", "completed", "failed"}
+        )
+        self.bl_disconnect_btn.setEnabled(
+            self._backlash_enabled and session_state != "disconnected"
+        )
         if results:
             names = ", ".join(str(item.get("name", item)) for item in results[:5])
             suffix = "..." if len(results) > 5 else ""
@@ -198,12 +223,14 @@ class CalibratePanel(QWidget):
     def _on_started(self, cal_type: str):
         action_text = "开始校零" if cal_type == "mission_engine" else "开始操作"
         self.result_log.append(f"[{cal_type}] {action_text}...")
-        self.ws_calibrate_btn.setEnabled(cal_type != "mission_engine")
+        self.ws_calibrate_btn.setEnabled(
+            self._calibration_enabled and cal_type != "mission_engine"
+        )
         for button in (
             self.bl_connect_btn, self.bl_start_btn, self.bl_refresh_btn,
             self.bl_download_btn, self.bl_disconnect_btn,
         ):
-            button.setEnabled(cal_type != "backlash")
+            button.setEnabled(self._backlash_enabled and cal_type != "backlash")
 
     def _on_result(self, cal_type: str, success: bool, detail: str):
         color = "#00B42A" if success else "#F53F3F"

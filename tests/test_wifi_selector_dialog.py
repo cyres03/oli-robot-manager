@@ -24,6 +24,7 @@ def test_selector_lists_robot_networks_when_not_connected(qtbot, monkeypatch):
     assert dialog.list_widget.count() == 2
     assert "HU_L04_01_091_2.4G" in dialog.list_widget.item(0).text()
     assert "HU_L04_01_091_5G" in dialog.list_widget.item(1).text()
+    assert "Luna L04" in dialog.list_widget.item(0).text()
     assert all(
         "[已连接]" not in dialog.list_widget.item(index).text()
         for index in range(dialog.list_widget.count())

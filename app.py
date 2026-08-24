@@ -64,6 +64,7 @@ class Application(QObject):
             mcp_worker=self.mcp_worker,
             robot_monitor=self.robot_monitor,
         )
+        self.main_window.apply_robot_identity(identity, initial=True)
 
     @property
     def window(self) -> MainWindow:

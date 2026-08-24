@@ -9,6 +9,7 @@ def test_scan_robot_networks_keeps_supported_models(monkeypatch):
         staticmethod(lambda: [
             {"ssid": "HU_D04_01_121_5G", "signal": 80, "security": "WPA2"},
             {"ssid": "HU_L04_01_091_5G", "signal": 85, "security": "WPA2"},
+            {"ssid": "HU_X99_01_001_5G", "signal": 70, "security": "WPA2"},
             {"ssid": "WF_TRON2A_001", "signal": 75, "security": "WPA2"},
             {"ssid": "office", "signal": 90, "security": "WPA2"},
         ]),
@@ -17,6 +18,7 @@ def test_scan_robot_networks_keeps_supported_models(monkeypatch):
     assert WifiManager.scan_robot_networks() == [
         {"ssid": "HU_D04_01_121_5G", "signal": 80, "security": "WPA2"},
         {"ssid": "HU_L04_01_091_5G", "signal": 85, "security": "WPA2"},
+        {"ssid": "HU_X99_01_001_5G", "signal": 70, "security": "WPA2"},
         {"ssid": "WF_TRON2A_001", "signal": 75, "security": "WPA2"},
     ]
 
@@ -111,3 +113,25 @@ def test_connected_robot_ssids_include_all_adapters(monkeypatch):
         "HU_L04_01_091_5G",
         "HU_D04_01_121_5G",
     ]
+
+
+def test_disconnects_only_other_robot_networks(monkeypatch):
+    commands = []
+    monkeypatch.setattr(wifi_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        WifiManager,
+        "_get_all_interfaces",
+        staticmethod(lambda: [
+            {"name": "wlan0", "ssid": "office"},
+            {"name": "wlan1", "ssid": "HU_L04_01_091_5G"},
+            {"name": "wlan2", "ssid": "HU_D04_01_121_5G"},
+        ]),
+    )
+    monkeypatch.setattr(
+        wifi_module.subprocess,
+        "run",
+        lambda args, **kwargs: commands.append(args),
+    )
+
+    assert WifiManager.disconnect_robot_networks_except("HU_L04_01_091_5G") is True
+    assert commands == [["nmcli", "device", "disconnect", "wlan2"]]

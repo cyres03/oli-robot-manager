@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal
 from network.wifi_manager import WifiManager
 from config import ROBOT_CONFIG
+from models.robot_profile import resolve_robot_profile
 
 
 class WifiSelectorDialog(QDialog):
@@ -84,10 +85,12 @@ class WifiSelectorDialog(QDialog):
 
         for net in sorted(networks, key=lambda n: -n.get("signal", 0)):
             ssid = net["ssid"]
+            profile = resolve_robot_profile(ssid)
+            model_name = profile.display_name if profile else "暂不支持的型号"
             signal = net.get("signal", 0)
             signal_bar = "█" * (signal // 20) + "░" * (5 - signal // 20)
             status = " [已连接]" if ssid == current_ssid else ""
-            text = f"{ssid}  {signal_bar}  {signal}%{status}"
+            text = f"{ssid}  ·  {model_name}  {signal_bar}  {signal}%{status}"
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, ssid)
             self.list_widget.addItem(item)
@@ -99,6 +102,7 @@ class WifiSelectorDialog(QDialog):
         if item:
             ssid = item.data(Qt.ItemDataRole.UserRole)
             self.network_selected.emit(ssid)
+            WifiManager.disconnect_robot_networks_except(ssid)
             # Try to connect to the selected robot WiFi
             success = WifiManager.connect_to_wifi(ssid, ROBOT_CONFIG.wifi_password)
             if success:

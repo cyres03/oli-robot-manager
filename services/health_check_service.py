@@ -120,11 +120,15 @@ class HealthCheckService(QObject):
             self.step_result.emit(HealthCheckState.CHECKING_CPU, {"passed": True, "cores": cores})
             self._transition_to(HealthCheckState.CHECKING_CAMERA)
             self._check_camera()
-        elif cores > 0 and self._retry_count < ROBOT_CONFIG.cpu_fix_max_retries:
+        elif (
+            cores > 0
+            and ROBOT_CONFIG.allow_cpu_repair
+            and self._retry_count < ROBOT_CONFIG.cpu_fix_max_retries
+        ):
             self._retry_count += 1
             self.step_result.emit(HealthCheckState.CHECKING_CPU,
                 {"passed": False, "cores": cores,
-                 "message": f"期望8核,实际{cores}核,尝试修复({self._retry_count}/{ROBOT_CONFIG.cpu_fix_max_retries})"})
+                 "message": f"期望{ROBOT_CONFIG.expected_cpu_cores}核,实际{cores}核,尝试修复({self._retry_count}/{ROBOT_CONFIG.cpu_fix_max_retries})"})
             self._transition_to(HealthCheckState.FIXING_CPU)
             self._fix_cpu()
         else:
@@ -324,7 +328,7 @@ class HealthCheckService(QObject):
             "diff_seconds": diff,
         })
 
-        if not passed:
+        if not passed and ROBOT_CONFIG.allow_time_repair:
             self._transition_to(HealthCheckState.FIXING_TIME)
             self._fix_time()
         else:

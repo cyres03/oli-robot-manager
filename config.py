@@ -128,8 +128,7 @@ class RobotConfig:
         default_factory=lambda: _local_secret("perception_password", "OLI_PERCEPTION_PASSWORD")
     )
     wifi_ssid_patterns: tuple[str, ...] = (
-        "HU_D",
-        "HU_L04_01",
+        "HU_",
         "WF_TRON2A",
         "WF_TRON2",
         "WF_",
