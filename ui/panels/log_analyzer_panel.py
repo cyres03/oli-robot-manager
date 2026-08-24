@@ -1,6 +1,4 @@
 """Embedded robot log analyzer for after-sales acceptance work."""
-import re
-from dataclasses import dataclass
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QTextCursor
@@ -20,42 +18,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-
-SLAVE_MOTOR_MAP = {
-    2: (15, "waist pitch", False), 3: (14, "waist roll", False), 4: (13, "waist yaw", True),
-    5: (18, "Left Shoulder pitch", False), 6: (19, "Left Shoulder roll", False),
-    7: (20, "Left Shoulder yaw", False), 8: (21, "Left Elbow", False),
-    9: (22, "Left Wrist yaw", False), 10: (23, "Left Wrist roll", False), 11: (24, "Left Wrist pitch", True),
-    13: (1, "Left Hip pitch", False), 14: (2, "Left Hip roll", False), 15: (3, "Left Hip yaw", False),
-    16: (4, "Left Knee", False), 17: (5, "Left Ankle pitch", False), 18: (6, "Left Ankle roll", True),
-    19: (16, "Head yaw", False), 20: (17, "Head pitch", True),
-    22: (25, "Right Shoulder pitch", False), 23: (26, "Right Shoulder roll", False),
-    24: (27, "Right Shoulder yaw", False), 25: (28, "Right Elbow", False),
-    26: (29, "Right Wrist yaw", False), 27: (30, "Right Wrist roll", False), 28: (31, "Right Wrist pitch", True),
-    29: (7, "Right Hip pitch", False), 30: (8, "Right Hip roll", False), 31: (9, "Right Hip yaw", False),
-    32: (10, "Right Knee", False), 33: (11, "Right Ankle pitch", False), 34: (12, "Right Ankle roll", True),
-}
-
-CONTROLLER_STATE_MAP = {
-    "ZeroTorque": "零力矩", "MotionLibrary": "动作库", "Mimic": "舞蹈",
-    "Walk": "拟人行走", "Damping": "阻尼", "IkStand": "站立",
-    "IkStand,GroundDetection": "站立和离地检测", "GroundDetection": "离地检测",
-    "LieDown": "躺着", "SitDown": "装箱姿势", "StandSit": "坐姿",
-    "MotionEdit": "动作编排", "SitStand": "坐姿起身", "LieSit": "躺姿起身",
-    "TeleopArmInit": "遥操作初始化", "TeleopArmInit,LBWalk": "遥操作初始化",
-    "LBWalk,TeleopArmExit": "遥操作初始化退出姿态", "LBWalk": "LBWalk", "": "无控制器（校零模式）",
-}
-
-
-@dataclass
-class LogEvent:
-    category: str
-    title: str
-    detail: str
-    timestamp: str
-    line_number: int
-    severity: str = "info"
+from services.log_analysis import LogEvent, analyze_log
 
 
 class LogAnalyzerPanel(QWidget):
@@ -107,7 +70,7 @@ class LogAnalyzerPanel(QWidget):
         self.summary_labels = {}
         for index, (key, label) in enumerate([
             ("pms", "分电板版本"), ("ecm", "主站版本"), ("ctrl", "主控软件版本"),
-            ("motor", "驱动器版本"), ("controller", "当前控制器"), ("faults", "通讯异常"),
+            ("motor", "驱动器版本"), ("controller", "当前控制器"), ("faults", "诊断发现"),
         ]):
             card = QWidget()
             card.setStyleSheet("background: #FFFFFF; border: 1px solid #E5E6EB; border-radius: 8px;")
@@ -171,82 +134,28 @@ class LogAnalyzerPanel(QWidget):
 
     def analyze_text(self, content: str, file_path: str = ""):
         self._original_lines = content.splitlines()
-        self._events.clear()
-        self.file_label.setText(file_path or "已加载日志")
-
-        versions = {"pms": "-", "ecm": "-", "ctrl": "-", "motor": "-"}
-        current_controller = "-"
-        switch_count = 0
-        fault_count = 0
-        processed_faults = set()
-        warned_motors = set()
-        current_timestamp = "--:--:--"
-
-        display_lines = []
-        for line_index, line_text in enumerate(self._original_lines, start=1):
-            display_lines.append(f"{line_index:>6}  {line_text}")
-            timestamp_match = re.search(r"\[(\d{4}[-/]\d{2}[-/]\d{2}\s+?\d{2}:\d{2}:\d{2}(?:\.\d{3})?)\]", line_text) or re.search(r"(\d{2}:\d{2}:\d{2}(?:\.\d{3})?)", line_text)
-            if timestamp_match:
-                current_timestamp = timestamp_match.group(1)
-
-            if "name:pms_version" in line_text:
-                version_match = re.search(r"msg:([\d.]+)", line_text)
-                if version_match:
-                    versions["pms"] = version_match.group(1)
-            elif "name:ecm_version" in line_text:
-                version_match = re.search(r"msg:([\d.]+)", line_text)
-                if version_match:
-                    versions["ecm"] = version_match.group(1)
-            elif "robot-hu-r-" in line_text:
-                version_match = re.search(r"robot-hu-r-([\d.]+)", line_text)
-                if version_match:
-                    versions["ctrl"] = version_match.group(1)
-
-            link_match = re.search(r"slave\s*=\s*(\d+).*?link_status\s*=\s*(0x[0-9a-fA-F]+)", line_text)
-            if link_match:
-                slave_id = int(link_match.group(1))
-                status = link_match.group(2).lower()
-                motor_info = SLAVE_MOTOR_MAP.get(slave_id)
-                if motor_info and status != "0x5a37":
-                    motor_id, part_name, is_last = motor_info
-                    if not (status == "0x5617" and is_last):
-                        fault_key = f"{slave_id}-{status}"
-                        if fault_key not in processed_faults:
-                            processed_faults.add(fault_key)
-                            fault_count += 1
-                            self._events.append(LogEvent(
-                                "通讯", f"Slave{slave_id} 通讯异常", f"Motor{motor_id} {part_name} status={status}",
-                                current_timestamp, line_index, "error" if status == "0x0" else "warning",
-                            ))
-
-            motor_warning = re.search(r"code:\s*65537.*?motor\s+(\d+)\s+MOTOR_WARNING.*?VOICE_PROMPT", line_text)
-            if motor_warning:
-                motor_id = int(motor_warning.group(1))
-                if motor_id not in warned_motors:
-                    warned_motors.add(motor_id)
-                    self._events.append(LogEvent("电机", f"电机{motor_id} 语音警告", "可能堵转或过速", current_timestamp, line_index, "warning"))
-
-            if "ability_running" in line_text and "message:" in line_text:
-                controller_match = re.search(r"message:\s*([^)]+)", line_text)
-                if controller_match:
-                    state = CONTROLLER_STATE_MAP.get(controller_match.group(1).strip(), controller_match.group(1).strip())
-                    if state != current_controller:
-                        switch_count += 1
-                        self._events.append(LogEvent("控制器", state, f"从 {current_controller}" if current_controller != "-" else "初始化", current_timestamp, line_index, "info"))
-                        current_controller = state
-
-            if re.search(r"recv\s+power\s+mtv\s+state\s*:\s*off", line_text, re.IGNORECASE):
-                self._events.append(LogEvent("电源", "驱动器下电", "所有关节电机断电", current_timestamp, line_index, "warning"))
-            elif re.search(r"recv\s+power\s+mtv\s+state\s*:\s*on", line_text, re.IGNORECASE):
-                self._events.append(LogEvent("电源", "驱动器上电", "电机预充电完成", current_timestamp, line_index, "success"))
-
+        analysis = analyze_log(content)
+        self._events = list(analysis.events)
+        file_name = file_path or "已加载日志"
+        self.file_label.setText(f"{analysis.product_name} · {analysis.sn} · {file_name}")
+        display_lines = [
+            f"{line_index:>6}  {line_text}"
+            for line_index, line_text in enumerate(self._original_lines, start=1)
+        ]
         self.log_view.setPlainText("\n".join(display_lines))
-        self.summary_labels["pms"].setText(versions["pms"])
-        self.summary_labels["ecm"].setText(versions["ecm"])
-        self.summary_labels["ctrl"].setText(versions["ctrl"])
-        self.summary_labels["motor"].setText(versions["motor"])
-        self.summary_labels["controller"].setText(current_controller)
-        self.summary_labels["faults"].setText(f"{fault_count} 个异常 / {switch_count} 次切换")
+        for key in ("pms", "ecm", "ctrl", "motor"):
+            self.summary_labels[key].setText(analysis.versions[key])
+        self.summary_labels["controller"].setText(analysis.current_controller)
+        error_count = sum(
+            finding.severity == "error" for finding in analysis.findings
+        )
+        warning_count = sum(
+            finding.severity == "warning" for finding in analysis.findings
+        )
+        self.summary_labels["faults"].setText(
+            f"{error_count} 错误 / {warning_count} 告警 / "
+            f"{analysis.controller_switch_count} 次切换"
+        )
         self._render_timeline()
 
     def _render_timeline(self):
