@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSignal, QTimer, Qt
 from PyQt6.QtWidgets import QSizePolicy
+from models.robot_profile import RobotProfile
 from workers.mcp_worker import McpWorker
 
 
@@ -54,9 +55,30 @@ class ControlPanel(QWidget):
         ]),
     ]
 
+    BUTTON_TOOLS = {
+        "prepare": "prepare",
+        "standup": "standup",
+        "sit_down": "sit_down",
+        "lie_down": "lie_down",
+        "safe_stop": "safe_stop",
+        "set_walk_mode": "set_walk_mode",
+        "set_motion_engine_1": "set_motion_engine",
+        "damping": "damping",
+        "zero_torque": "zero_torque",
+        "straight_walk": "set_walk_velocity",
+        "get_action_library_status": "get_action_library_status",
+        "audio_get_wakeup": "audio_get_wakeup",
+        "audio_wakeup_enable": "audio_wakeup_control",
+        "audio_wakeup_disable": "audio_wakeup_control",
+        "led_green": "led_control",
+        "led_breathe_blue": "led_control",
+        "led_off": "led_control",
+    }
+
     def __init__(self, mcp_worker: McpWorker, parent=None):
         super().__init__(parent)
         self._mcp = mcp_worker
+        self._allowed_tools: frozenset[str] | None = None
         self._current_mode = "unknown"
         self._robot_status = "unknown"
         self._last_robot_status_key = None
@@ -360,6 +382,27 @@ class ControlPanel(QWidget):
         guard_text = "吊装保护: 开" if protected else "吊装保护: 关"
         self.mode_hint.setText(f"当前模式: {mode_cn} | 行走模式: {walk_ok} | {guard_text}")
 
+        if self._allowed_tools is not None:
+            for button_key, button in self._tool_buttons.items():
+                tool_name = self.BUTTON_TOOLS.get(button_key)
+                if tool_name and tool_name not in self._allowed_tools:
+                    button.setEnabled(False)
+                    button.setToolTip("当前机器人型号尚未开放此能力")
+            cycle_allowed = all(
+                tool in self._allowed_tools for tool in ("sit_down", "standup", "lie_down")
+            )
+            if not cycle_allowed:
+                self.sit_stand_cycle_btn.setEnabled(False)
+                self.lie_stand_cycle_btn.setEnabled(False)
+
+    def apply_profile(self, profile: RobotProfile | None):
+        self._allowed_tools = profile.allowed_tools if profile else frozenset()
+        if "set_walk_velocity" not in self._allowed_tools:
+            self._stop_straight_walk(update_ui=False)
+        if self._posture_cycle_active:
+            self._stop_posture_cycle("型号切换，已停止后续姿态循环")
+        self._update_button_states()
+
     def update_robot_status(self, info: dict):
         status = info.get("robot_status", "")
         if not status or status == "?":
@@ -383,6 +426,14 @@ class ControlPanel(QWidget):
         self._update_button_states()
 
     def _execute(self, tool: str, label: str):
+        internal_tool = self.BUTTON_TOOLS.get(tool)
+        if (
+            self._allowed_tools is not None
+            and internal_tool
+            and internal_tool not in self._allowed_tools
+        ):
+            self.result_display.setText(f"{label}：当前机器人型号尚未开放此能力")
+            return
         protected = self.hanging_guard.isChecked()
         if protected and tool in {"sit_down", "lie_down", "straight_walk"}:
             self.result_display.setText("吊装保护已开启：已拦截坐下/躺下/直线行走这类高风险动作")

@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
 )
 
 from config import ROBOT_CONFIG
+from models.robot_profile import OLI_PROFILE, RobotProfile
 from network.wifi_manager import WifiManager
 from services import credential_store
 from ui.panels.log_analyzer_panel import LogAnalyzerPanel
@@ -138,6 +139,70 @@ class AcceptanceCheck:
     url: str = ""
 
 
+def build_acceptance_checks(profile: RobotProfile) -> list[AcceptanceCheck]:
+    main = profile.main_node
+    companion = profile.companion_nodes[0] if profile.companion_nodes else None
+    portal = profile.service("portal")
+    logs = profile.service("logs")
+    mcp = profile.service("mcp")
+    checks = {
+        "wifi": AcceptanceCheck("wifi", "网络", "机器人 WiFi 识别", "本机 WiFi", "local"),
+        "portal": AcceptanceCheck("portal", "网络", "机器人信息页 8080", "HTTP", "http", url=portal.url or ""),
+        "logs": AcceptanceCheck("logs", "网络", "日志页面 8090", "HTTP", "http", url=logs.url or ""),
+        "mcp": AcceptanceCheck(
+            "mcp", "网络", "MCP 服务 18080", "HTTP" if mcp.supported else "该型号不支持",
+            "http" if mcp.supported else "na", url=mcp.url or "",
+        ),
+        "main_ssh": AcceptanceCheck(
+            "main_ssh", "SSH", f"{main.label} SSH 登录", f"{main.username}@{main.host}",
+            "ssh", target="main", command="hostname; uname -a",
+        ),
+        "main_time": AcceptanceCheck(
+            "main_time", main.label, f"{main.label}系统时间", f"{main.username}@{main.host}",
+            "ssh", target="main", command=TIME_CHECK_COMMAND,
+        ),
+        "main_disk": AcceptanceCheck(
+            "main_disk", main.label, f"{main.label}磁盘空间", "SSH", "ssh",
+            target="main", command="df -h /",
+        ),
+        "main_process": AcceptanceCheck(
+            "main_process", main.label, f"{main.label}机器人进程", "SSH", "ssh",
+            target="main", command="ps -eo comm,args | grep -E 'limx|robot|mros' | grep -v grep | head -30",
+        ),
+        "imu": AcceptanceCheck(
+            "imu", main.label, "IMU 频率", "SSH", "ssh", target="main",
+            command="bash -c 'source /opt/limx/install/setup.bash && export MROS_IP_LIST=10.192.1.x && timeout --signal=KILL 8s /opt/limx/install/bin/mrostopic hz /ImuData' 2>&1",
+        ),
+    }
+    if companion:
+        camera_command = (
+            "ps -eo comm,args | grep -Ei 'mroswebvideo|camera|cosa|opus|GestureMrosNode' | grep -v grep | head -40"
+            if profile.key == "hu_l04_01"
+            else "lsusb -t 2>&1; echo '---'; lsusb 2>&1"
+        )
+        checks.update({
+            "companion_ssh": AcceptanceCheck(
+                "companion_ssh", "SSH", f"{companion.label} SSH 登录",
+                f"{companion.username}@{companion.host}", "ssh", target="companion",
+                command="hostname; uname -a",
+            ),
+            "companion_time": AcceptanceCheck(
+                "companion_time", companion.label, f"{companion.label}系统时间",
+                f"{companion.username}@{companion.host}", "ssh", target="companion",
+                command=TIME_CHECK_COMMAND,
+            ),
+            "cpu": AcceptanceCheck(
+                "cpu", companion.label, f"{companion.label} CPU 核心数", "SSH", "ssh",
+                target="companion", command="nproc",
+            ),
+            "camera": AcceptanceCheck(
+                "camera", companion.label, "相机/视觉服务", "SSH", "ssh",
+                target="companion", command=camera_command,
+            ),
+        })
+    return [checks[key] for key in profile.acceptance_check_keys if key in checks]
+
+
 class BeijingTimeWorker(QThread):
     time_ready = pyqtSignal(object)
     failed = pyqtSignal(str)
@@ -169,14 +234,18 @@ class RobotInfoWorker(QThread):
     finished = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
+    def __init__(self, portal_url: str, parent=None):
+        super().__init__(parent)
+        self.portal_url = portal_url.rstrip("/")
+
     def run(self):
         try:
-            response = httpx.get("http://10.192.1.2:8080/get_robot_info", timeout=6.0)
+            response = httpx.get(f"{self.portal_url}/get_robot_info", timeout=6.0)
             response.raise_for_status()
             self.finished.emit(response.json())
         except Exception:
             try:
-                response = httpx.get("http://10.192.1.2:8080/get_local_version", timeout=6.0)
+                response = httpx.get(f"{self.portal_url}/get_local_version", timeout=6.0)
                 response.raise_for_status()
                 self.finished.emit(response.json())
             except Exception as error:
@@ -187,9 +256,13 @@ class LogListWorker(QThread):
     finished = pyqtSignal(list)
     failed = pyqtSignal(str)
 
+    def __init__(self, logs_url: str, parent=None):
+        super().__init__(parent)
+        self.logs_url = logs_url.rstrip("/") + "/"
+
     def run(self):
         try:
-            response = httpx.get("http://10.192.1.2:8090/log/", timeout=8.0, follow_redirects=True)
+            response = httpx.get(f"{self.logs_url}log/", timeout=8.0, follow_redirects=True)
             response.raise_for_status()
             names = sorted(set(re.findall(r'href="([^"]+\.log(?:\.active)?)"', response.text)))
             self.finished.emit(names)
@@ -201,13 +274,14 @@ class LogDownloadWorker(QThread):
     finished = pyqtSignal(str, str, str)
     failed = pyqtSignal(str)
 
-    def __init__(self, log_name: str, parent=None):
+    def __init__(self, logs_url: str, log_name: str, parent=None):
         super().__init__(parent)
+        self.logs_url = logs_url.rstrip("/") + "/"
         self.log_name = log_name
 
     def run(self):
         try:
-            url = urljoin("http://10.192.1.2:8090/log/", self.log_name)
+            url = urljoin(f"{self.logs_url}log/", self.log_name)
             response = httpx.get(url, timeout=30.0, follow_redirects=True)
             response.raise_for_status()
             content = response.text
@@ -227,32 +301,33 @@ class AcceptanceTestPanel(QWidget):
     sudo_password_required = pyqtSignal(str, str, str)
     log_message = pyqtSignal(str, str)
 
-    CHECKS = [
-        AcceptanceCheck("wifi", "网络", "机器人 WiFi 识别", "本机 WiFi", "local"),
-        AcceptanceCheck("portal", "网络", "机器人信息页 8080", "HTTP", "http", url="http://10.192.1.2:8080"),
-        AcceptanceCheck("logs", "网络", "日志页面 8090", "HTTP", "http", url="http://10.192.1.2:8090"),
-        AcceptanceCheck("mcp", "网络", "MCP 服务 18080", "HTTP", "http", url="http://10.192.1.2:18080/mcp"),
-        AcceptanceCheck("main_ssh", "SSH", "主控 SSH 登录", "limx@10.192.1.2", "ssh", target="main", command="hostname; uname -a"),
-        AcceptanceCheck("perception_ssh", "SSH", "感知 SSH 登录", "guest@10.192.1.3", "ssh", target="perception", command="hostname; uname -a"),
-        AcceptanceCheck("main_time", "主控", "主控系统时间", "limx@10.192.1.2", "ssh", target="main", command=TIME_CHECK_COMMAND),
-        AcceptanceCheck("perception_time", "感知", "感知系统时间", "guest@10.192.1.3", "ssh", target="perception", command=TIME_CHECK_COMMAND),
-        AcceptanceCheck("main_disk", "主控", "主控磁盘空间", "SSH", "ssh", target="main", command="df -h /"),
-        AcceptanceCheck("main_process", "主控", "主控机器人进程", "SSH", "ssh", target="main", command="ps -eo comm,args | grep -E 'limx|robot|mros' | grep -v grep | head -30"),
-        AcceptanceCheck("cpu", "感知", "感知 CPU 核心数", "SSH", "ssh", target="perception", command="nproc"),
-        AcceptanceCheck("camera", "感知", "3D/双目相机 USB", "SSH", "ssh", target="perception", command="lsusb -t 2>&1; echo '---'; lsusb 2>&1"),
-        AcceptanceCheck("imu", "主控", "IMU 频率", "SSH", "ssh", target="main", command="bash -c 'source /opt/limx/install/setup.bash && export MROS_IP_LIST=10.192.1.x && timeout --signal=KILL 8s /opt/limx/install/bin/mrostopic hz /ImuData' 2>&1"),
-    ]
+    CHECKS = build_acceptance_checks(OLI_PROFILE)
 
-    def __init__(self, power_cycle_service=None, parent=None):
+    def __init__(self, power_cycle_service=None, parent=None, profile: RobotProfile | None = None):
         super().__init__(parent)
+        self._profile = profile or ROBOT_CONFIG.active_profile or OLI_PROFILE
+        self.CHECKS = build_acceptance_checks(self._profile)
         self._power_cycle_service = power_cycle_service
         self._workers: list[QThread] = []
         self._pending: list[int] = []
         self._running_index: int | None = None
+        self._profile_generation = 0
         self._ssh_retry: tuple[int, AcceptanceCheck, str] | None = None
         self._pending_time_fix: tuple[int, AcceptanceCheck, str, str] | None = None
         self._build_ui()
         self._populate_checks()
+
+    def apply_profile(self, profile: RobotProfile | None):
+        self._profile_generation += 1
+        self._ssh_retry = None
+        self._pending_time_fix = None
+        self._profile = profile or OLI_PROFILE
+        self.CHECKS = build_acceptance_checks(self._profile)
+        self._pending.clear()
+        self._running_index = None
+        self._populate_checks()
+        self.detail_view.clear()
+        self.summary_label.setText(f"{self._profile.display_name} · 就绪")
 
     def _build_ui(self):
         self.setStyleSheet(
@@ -387,9 +462,18 @@ class AcceptanceTestPanel(QWidget):
 
     def refresh_robot_versions(self):
         self._append_detail("正在从 8080 manager 读取版本信息...")
-        worker = RobotInfoWorker(self)
-        worker.finished.connect(self._on_robot_info_loaded)
-        worker.failed.connect(lambda error: self._append_detail(f"读取 8080 版本失败: {error}"))
+        generation = self._profile_generation
+        worker = RobotInfoWorker(ROBOT_CONFIG.portal_url, self)
+        worker.finished.connect(
+            lambda info, current=generation:
+            self._run_if_current(current, self._on_robot_info_loaded, info)
+        )
+        worker.failed.connect(
+            lambda error, current=generation:
+            self._run_if_current(
+                current, self._append_detail, f"读取 8080 版本失败: {error}"
+            )
+        )
         self._workers.append(worker)
         worker.start()
 
@@ -430,9 +514,18 @@ class AcceptanceTestPanel(QWidget):
 
     def refresh_log_list(self):
         self.log_status.setText("正在读取 8090 日志列表...")
-        worker = LogListWorker(self)
-        worker.finished.connect(self._on_log_list_loaded)
-        worker.failed.connect(lambda error: self.log_status.setText(f"读取失败: {error}"))
+        generation = self._profile_generation
+        worker = LogListWorker(ROBOT_CONFIG.logs_url, self)
+        worker.finished.connect(
+            lambda names, current=generation:
+            self._run_if_current(current, self._on_log_list_loaded, names)
+        )
+        worker.failed.connect(
+            lambda error, current=generation:
+            self._run_if_current(
+                current, self.log_status.setText, f"读取失败: {error}"
+            )
+        )
         self._workers.append(worker)
         worker.start()
 
@@ -451,9 +544,20 @@ class AcceptanceTestPanel(QWidget):
             self.log_status.setText("请先刷新并选择日志")
             return
         self.log_status.setText(f"正在下载 {log_name}...")
-        worker = LogDownloadWorker(log_name, self)
-        worker.finished.connect(self._on_log_downloaded)
-        worker.failed.connect(lambda error: self.log_status.setText(f"下载失败: {error}"))
+        generation = self._profile_generation
+        worker = LogDownloadWorker(ROBOT_CONFIG.logs_url, log_name, self)
+        worker.finished.connect(
+            lambda name, path, content, current=generation:
+            self._run_if_current(
+                current, self._on_log_downloaded, name, path, content
+            )
+        )
+        worker.failed.connect(
+            lambda error, current=generation:
+            self._run_if_current(
+                current, self.log_status.setText, f"下载失败: {error}"
+            )
+        )
         self._workers.append(worker)
         worker.start()
 
@@ -492,6 +596,8 @@ class AcceptanceTestPanel(QWidget):
             self._run_http_check(row_index, check)
         elif check.kind == "ssh":
             self._run_ssh_check(row_index, check)
+        elif check.kind == "na":
+            self._finish_na(row_index, "当前型号不提供此服务")
 
     def _run_local_check(self, row_index: int, check: AcceptanceCheck):
         if check.key == "wifi":
@@ -503,9 +609,21 @@ class AcceptanceTestPanel(QWidget):
         self._finish_check(row_index, False, "未知本地检查", "")
 
     def _run_http_check(self, row_index: int, check: AcceptanceCheck):
+        generation = self._profile_generation
         worker = HttpCheckWorker(check.url, self)
-        worker.finished.connect(lambda status_code, body, current_row=row_index, current_check=check: self._on_http_done(current_row, current_check, status_code, body))
-        worker.failed.connect(lambda error, current_row=row_index: self._finish_check(current_row, False, error, error))
+        worker.finished.connect(
+            lambda status_code, body, current_row=row_index, current_check=check, current=generation:
+            self._run_if_current(
+                current, self._on_http_done,
+                current_row, current_check, status_code, body,
+            )
+        )
+        worker.failed.connect(
+            lambda error, current_row=row_index, current=generation:
+            self._run_if_current(
+                current, self._finish_check, current_row, False, error, error,
+            )
+        )
         self._workers.append(worker)
         worker.start()
 
@@ -523,16 +641,27 @@ class AcceptanceTestPanel(QWidget):
         check: AcceptanceCheck,
         robot_id: str = "",
     ):
+        generation = self._profile_generation
         worker = self._create_ssh_worker(check.target, robot_id)
         worker.set_command(check.command)
-        worker.command_finished.connect(lambda exit_code, current_row=row_index, current_check=check, current_worker=worker: self._on_ssh_done(current_row, current_check, exit_code, current_worker.collected_output))
-        worker.authentication_required.connect(
-            lambda host, username, robot_id, current_row=row_index, current_check=check:
-            self._on_ssh_authentication_required(
-                current_row, current_check, host, username, robot_id
+        worker.command_finished.connect(
+            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker, current=generation:
+            self._run_if_current(
+                current, self._on_ssh_done,
+                current_row, current_check, exit_code, current_worker.collected_output,
             )
         )
-        worker.error_occurred.connect(lambda error, current_row=row_index: self._on_ssh_error(current_row, error))
+        worker.authentication_required.connect(
+            lambda host, username, robot_id, current_row=row_index, current_check=check, current=generation:
+            self._run_if_current(
+                current, self._on_ssh_authentication_required,
+                current_row, current_check, host, username, robot_id,
+            )
+        )
+        worker.error_occurred.connect(
+            lambda error, current_row=row_index, current=generation:
+            self._run_if_current(current, self._on_ssh_error, current_row, error)
+        )
         self._workers.append(worker)
         worker.start()
 
@@ -587,7 +716,7 @@ class AcceptanceTestPanel(QWidget):
 
     def _on_ssh_done(self, row_index: int, check: AcceptanceCheck, exit_code: int, output: str):
         self.ssh_connection_changed.emit(True)
-        if check.key in {"main_time", "perception_time"}:
+        if check.key in {"main_time", "companion_time"}:
             self._request_beijing_time(row_index, check, output, verification=False)
             return
         passed, summary = self._evaluate_ssh_output(check, output)
@@ -604,23 +733,33 @@ class AcceptanceTestPanel(QWidget):
         output: str,
         verification: bool,
     ):
+        generation = self._profile_generation
         self._set_row(row_index, "执行中", "正在获取可信网络北京时间...", "")
         worker = BeijingTimeWorker(self)
         if verification:
             worker.time_ready.connect(
-                lambda reference, current_row=row_index, current_check=check, current_output=output:
-                self._on_time_verified(current_row, current_check, current_output, reference)
+                lambda reference, current_row=row_index, current_check=check, current_output=output, current=generation:
+                self._run_if_current(
+                    current, self._on_time_verified,
+                    current_row, current_check, current_output, reference,
+                )
             )
             failure_summary = "无法获取可信网络北京时间，校时结果无法复验"
         else:
             worker.time_ready.connect(
-                lambda reference, current_row=row_index, current_check=check, current_output=output:
-                self._on_time_checked(current_row, current_check, current_output, reference)
+                lambda reference, current_row=row_index, current_check=check, current_output=output, current=generation:
+                self._run_if_current(
+                    current, self._on_time_checked,
+                    current_row, current_check, current_output, reference,
+                )
             )
             failure_summary = "无法获取可信网络北京时间，未执行自动校时"
         worker.failed.connect(
-            lambda error, current_row=row_index, summary=failure_summary:
-            self._finish_check(current_row, False, summary, error)
+            lambda error, current_row=row_index, summary=failure_summary, current=generation:
+            self._run_if_current(
+                current, self._finish_check,
+                current_row, False, summary, error,
+            )
         )
         self._workers.append(worker)
         worker.start()
@@ -637,12 +776,20 @@ class AcceptanceTestPanel(QWidget):
         if passed:
             self._finish_check(row_index, True, summary, output.strip()[:1200])
             return
+        if not self._profile.allow_time_repair:
+            self._finish_check(
+                row_index,
+                False,
+                f"{summary}；当前型号仅检查，不自动校时",
+                output.strip()[:1200],
+            )
+            return
 
         self._set_row(row_index, "执行中", f"{summary}，正在自动校时...", "")
         self._append_detail(f"[校时前] {check.name}\n{output.strip()}\n")
         beijing_time_text = _current_reference_time(reference).strftime("%Y-%m-%d %H:%M:%S")
         robot_id = ROBOT_CONFIG.ws_accid
-        if check.target == "perception":
+        if check.target == "companion":
             self._pending_time_fix = (
                 row_index, check, beijing_time_text, robot_id
             )
@@ -712,12 +859,13 @@ class AcceptanceTestPanel(QWidget):
         remember: bool = False,
         from_store: bool = False,
     ):
+        generation = self._profile_generation
         fix_commands = (
             "timedatectl set-timezone Asia/Shanghai && "
             f'date -s "{beijing_time_text}" && '
             "hwclock --systohc"
         )
-        if check.target == "perception":
+        if check.target == "companion":
             quoted_commands = shlex.quote(fix_commands)
             command = (
                 "if ! sudo -S -p '' -v; then "
@@ -733,27 +881,28 @@ class AcceptanceTestPanel(QWidget):
             )
         worker = self._create_ssh_worker(check.target, robot_id)
         worker.set_command(command)
-        if check.target == "perception":
+        if check.target == "companion":
             worker.set_stdin_text(sudo_password + "\n")
             worker.set_transient_credential(
                 sudo_password, remember, from_store
             )
         sudo_password = ""
         worker.command_finished.connect(
-            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker:
-            self._on_time_fixed(
-                current_row,
-                current_check,
-                exit_code,
-                current_worker.collected_output,
-                robot_id,
-                beijing_time_text,
-                current_worker,
+            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker, current=generation:
+            self._run_if_current(
+                current,
+                self._on_time_fixed,
+                current_row, current_check, exit_code,
+                current_worker.collected_output, robot_id,
+                beijing_time_text, current_worker,
             )
         )
         worker.error_occurred.connect(
-            lambda error, current_row=row_index:
-            self._finish_check(current_row, False, f"自动校时 SSH 失败: {error}", error)
+            lambda error, current_row=row_index, current=generation:
+            self._run_if_current(
+                current, self._finish_check,
+                current_row, False, f"自动校时 SSH 失败: {error}", error,
+            )
         )
         self._workers.append(worker)
         worker.start()
@@ -770,7 +919,7 @@ class AcceptanceTestPanel(QWidget):
     ):
         if exit_code != 0 or "__TIME_FIX_OK__" not in output:
             detail = output.strip() or "校时命令未返回成功标记"
-            if check.target == "perception" and self._is_sudo_auth_failure(detail):
+            if check.target == "companion" and self._is_sudo_auth_failure(detail):
                 if worker.stored_credential_invalid:
                     self.log_message.emit(
                         "[凭据] 已保存的感知机 sudo 密码失效，已删除",
@@ -794,7 +943,7 @@ class AcceptanceTestPanel(QWidget):
             self._finish_check(row_index, False, "自动校时失败", detail)
             return
 
-        if check.target == "perception" and worker.credential_saved is not None:
+        if check.target == "companion" and worker.credential_saved is not None:
             self.log_message.emit(
                 "[凭据] 感知机密码已保存到系统凭据管理器"
                 if worker.credential_saved
@@ -805,18 +954,20 @@ class AcceptanceTestPanel(QWidget):
         self._append_detail(f"[自动校时] {check.name}\n{output.strip()}\n")
         worker = self._create_ssh_worker(check.target, robot_id)
         worker.set_command(TIME_CHECK_COMMAND)
+        generation = self._profile_generation
         worker.command_finished.connect(
-            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker:
-            self._request_beijing_time(
-                current_row,
-                current_check,
-                current_worker.collected_output,
-                verification=True,
+            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker, current=generation:
+            self._run_if_current(
+                current, self._request_beijing_time,
+                current_row, current_check, current_worker.collected_output, True,
             )
         )
         worker.error_occurred.connect(
-            lambda error, current_row=row_index:
-            self._finish_check(current_row, False, f"校时复验 SSH 失败: {error}", error)
+            lambda error, current_row=row_index, current=generation:
+            self._run_if_current(
+                current, self._finish_check,
+                current_row, False, f"校时复验 SSH 失败: {error}", error,
+            )
         )
         self._workers.append(worker)
         worker.start()
@@ -846,7 +997,7 @@ class AcceptanceTestPanel(QWidget):
         stripped = output.strip()
         if not stripped:
             return False, "无输出"
-        if check.key in {"main_ssh", "perception_ssh"}:
+        if check.key in {"main_ssh", "companion_ssh"}:
             return True, stripped.splitlines()[0]
         if check.key == "cpu":
             cores = int(stripped) if stripped.isdigit() else 0
@@ -854,6 +1005,12 @@ class AcceptanceTestPanel(QWidget):
         if check.key == "camera":
             lower_output = stripped.lower()
             has_camera = any(keyword in lower_output for keyword in ("camera", "realsense", "imaging", "video"))
+            if self._profile.key == "hu_l04_01":
+                has_visual_service = any(
+                    keyword in lower_output
+                    for keyword in ("mroswebvideo", "cosa", "opus", "gesturemrosnode")
+                )
+                return has_camera or has_visual_service, "视觉/相机服务=" + ("是" if has_camera or has_visual_service else "否")
             has_usb3 = "5000" in stripped or "5000M" in stripped
             return has_camera and has_usb3, f"相机={'是' if has_camera else '否'}，USB3={'是' if has_usb3 else '否'}"
         if check.key == "imu":
@@ -873,6 +1030,12 @@ class AcceptanceTestPanel(QWidget):
         self.log_message.emit(f"[验收] {self.CHECKS[row_index].name}: {status}", "pass" if passed else "error")
         self._run_next_check()
 
+    def _finish_na(self, row_index: int, summary: str):
+        self._set_row(row_index, "N/A", summary, datetime.now().strftime("%H:%M:%S"))
+        self._append_detail(f"[N/A] {self.CHECKS[row_index].name}\n{summary}\n")
+        self.log_message.emit(f"[验收] {self.CHECKS[row_index].name}: N/A", "info")
+        self._run_next_check()
+
     def _set_row(self, row_index: int, status: str, summary: str, time_text: str):
         self.check_table.item(row_index, 3).setText(status)
         self.check_table.item(row_index, 4).setText(summary)
@@ -884,6 +1047,7 @@ class AcceptanceTestPanel(QWidget):
             "执行中": "#FF7D00",
             "等待授权": "#FF7D00",
             "等待密码": "#FF7D00",
+            "N/A": "#C9CDD4",
             "待执行": "#86909C",
         }
         status_item.setForeground(Qt.GlobalColor.black)
@@ -900,10 +1064,20 @@ class AcceptanceTestPanel(QWidget):
     def _update_summary(self):
         passed = 0
         failed = 0
+        not_applicable = 0
         for row_index in range(self.check_table.rowCount()):
             status = self.check_table.item(row_index, 3).text()
             if status == "PASS":
                 passed += 1
             elif status == "FAIL":
                 failed += 1
-        self.summary_label.setText(f"完成：PASS {passed} / FAIL {failed}")
+            elif status == "N/A":
+                not_applicable += 1
+        self.summary_label.setText(
+            f"完成：PASS {passed} / FAIL {failed} / N/A {not_applicable}"
+        )
+
+    def _run_if_current(self, generation: int, callback, *args):
+        if generation == self._profile_generation:
+            return callback(*args)
+        return None

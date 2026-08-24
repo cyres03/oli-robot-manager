@@ -178,15 +178,23 @@ class WifiManager:
     @staticmethod
     def get_robot_ssid() -> Optional[str]:
         """Get the robot SSID from any connected interface."""
+        connected = WifiManager.get_connected_robot_ssids()
+        return connected[0] if connected else None
+
+    @staticmethod
+    def get_connected_robot_ssids() -> list[str]:
+        """Return unique robot SSIDs connected across all WiFi adapters."""
         try:
             pattern = WifiManager._get_pattern()
+            connected = []
             for iface in WifiManager._get_all_interfaces():
                 ssid = iface.get("ssid", "")
-                if ssid and pattern.match(ssid):
-                    return ssid
+                if ssid and pattern.match(ssid) and ssid not in connected:
+                    connected.append(ssid)
+            return connected
         except Exception:
             pass
-        return None
+        return []
 
     @staticmethod
     def connect_to_wifi(ssid: str, password: str) -> bool:
@@ -198,6 +206,34 @@ class WifiManager:
         elif system == "Darwin":
             return WifiManager._macos_connect(ssid, password)
         return False
+
+    @staticmethod
+    def disconnect_robot_networks_except(selected_ssid: str) -> bool:
+        """Disconnect other robot WiFi links so shared robot IPs stay unambiguous."""
+        pattern = WifiManager._get_pattern()
+        success = True
+        system = platform.system()
+        for iface in WifiManager._get_all_interfaces():
+            ssid = iface.get("ssid", "")
+            name = iface.get("name", "")
+            if not name or not ssid or ssid == selected_ssid or not pattern.match(ssid):
+                continue
+            try:
+                if system == "Linux":
+                    subprocess.run(
+                        ["nmcli", "device", "disconnect", name],
+                        check=True, capture_output=True, **_no_window(),
+                    )
+                elif system == "Windows":
+                    subprocess.run(
+                        ["netsh", "wlan", "disconnect", f"interface={name}"],
+                        check=True, capture_output=True, **_no_window(),
+                    )
+                else:
+                    success = False
+            except (OSError, subprocess.CalledProcessError):
+                success = False
+        return success
 
     @staticmethod
     def _windows_connect(ssid: str, password: str) -> bool:

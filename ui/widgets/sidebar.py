@@ -5,6 +5,8 @@ from PyQt6.QtWidgets import QFrame, QVBoxLayout, QPushButton, QLabel, QWidget, Q
 from PyQt6.QtCore import pyqtSignal, QTimer, QEasingCurve, QPropertyAnimation, QRect, QVariantAnimation, Qt
 from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtSvgWidgets import QSvgWidget
+from models.robot_profile import CapabilityState, RobotProfile
+from models.workspace import WorkspaceDefinition
 from network.wifi_manager import WifiManager
 
 
@@ -240,19 +242,17 @@ class Sidebar(QFrame):
 
         layout.addStretch()
 
-        section = QLabel("  快捷SSH")
-        section.setObjectName("sidebarSectionLabel")
-        layout.addWidget(section)
+        self.ssh_section = QLabel("  快捷SSH")
+        self.ssh_section.setObjectName("sidebarSectionLabel")
+        layout.addWidget(self.ssh_section)
 
-        for host_label, host, user in [
-            ("主控 (limx@10.192.1.2)", "10.192.1.2", "limx"),
-            ("感知 (guest@10.192.1.3)", "10.192.1.3", "guest"),
-        ]:
-            ssh_btn = QPushButton(f"  {host_label}")
+        self._ssh_buttons: list[QPushButton] = []
+        for _ in range(2):
+            ssh_btn = QPushButton()
             ssh_btn.setObjectName("sidebarSshBtn")
-            ssh_btn.clicked.connect(
-                lambda checked, h=host, u=user: self._on_ssh(h, u))
+            ssh_btn.hide()
             layout.addWidget(ssh_btn)
+            self._ssh_buttons.append(ssh_btn)
 
         self.set_active("dance_library")
         QTimer.singleShot(0, lambda: self._move_indicator(self._buttons["dance_library"], animate=False))
@@ -261,6 +261,60 @@ class Sidebar(QFrame):
         self._wifi_timer = QTimer(self)
         self._wifi_timer.timeout.connect(self.refresh_wifi_status)
         self._wifi_timer.start(5000)
+
+    def apply_profile(self, profile: RobotProfile | None):
+        nodes = [profile.main_node, *profile.companion_nodes] if profile else []
+        self.ssh_section.setVisible(bool(nodes))
+        for index, button in enumerate(self._ssh_buttons):
+            try:
+                button.clicked.disconnect()
+            except TypeError:
+                pass
+            if index >= len(nodes):
+                button.hide()
+                continue
+            node = nodes[index]
+            button.setText(f"  {node.label} ({node.username}@{node.host})")
+            button.clicked.connect(
+                lambda checked, host=node.host, user=node.username: self._on_ssh(host, user)
+            )
+            button.show()
+        robot_pages_enabled = profile is not None
+        for key in ("dance_library", "controls", "acceptance", "health_check"):
+            self._buttons[key].setEnabled(robot_pages_enabled)
+        self._buttons["calibrate"].setEnabled(bool(
+            profile and profile.capability("calibration") == CapabilityState.SUPPORTED
+        ))
+
+    def apply_workspace(self, workspace: WorkspaceDefinition):
+        route_map = {route.key: route.label for route in workspace.routes}
+        for key, button in self._buttons.items():
+            visible = key in route_map
+            button.setVisible(visible)
+            if visible:
+                button.setText(f"  {route_map[key]}")
+        if "log_analysis" in route_map and "log_analysis" not in self._buttons:
+            button = SidebarNavButton(
+                f"  {route_map['log_analysis']}", self._nav_palette,
+            )
+            button.setObjectName("sidebarNav")
+            button.setCheckable(True)
+            button.clicked.connect(
+                lambda checked: self._on_click("log_analysis")
+            )
+            layout = self.layout()
+            settings_index = layout.indexOf(self._buttons["settings"])
+            layout.insertWidget(settings_index, button)
+            self._buttons["log_analysis"] = button
+        elif "log_analysis" in self._buttons:
+            self._buttons["log_analysis"].setVisible("log_analysis" in route_map)
+            if "log_analysis" in route_map:
+                self._buttons["log_analysis"].setText(
+                    f"  {route_map['log_analysis']}"
+                )
+        active = workspace.default_route
+        if active in self._buttons:
+            self.set_active(active)
 
     def refresh_wifi_status(self):
         ssid = WifiManager.get_robot_ssid() or WifiManager.get_current_ssid()

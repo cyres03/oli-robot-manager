@@ -21,3 +21,12 @@ def test_status_banner_displays_and_clears_robot_sn(qtbot):
     banner.set_disconnected()
 
     assert banner.sn_label.text() == ""
+
+
+def test_status_banner_displays_profile_and_instance(qtbot):
+    banner = StatusBanner()
+    qtbot.addWidget(banner)
+
+    banner.set_identity("Luna L04", "HU_L04_01_091")
+
+    assert banner.sn_label.text() == "Luna L04 · HU_L04_01_091"

@@ -19,6 +19,8 @@ class StatusBanner(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._last_status_key = None
+        self._profile_name = ""
+        self._robot_accid = ""
         self.setObjectName("statusBanner")
         self.setFixedHeight(44)
         self.setStyleSheet("""
@@ -89,7 +91,8 @@ class StatusBanner(QFrame):
         self._last_status_key = status_key
 
         if sn and sn != "?":
-            self.sn_label.setText(sn)
+            self._robot_accid = sn
+            self._refresh_identity_label()
 
         # Status pill
         cn_name, color = self.STATUS_MAP.get(status, (status, "#86909C"))
@@ -131,3 +134,18 @@ class StatusBanner(QFrame):
         self.sn_label.setText("")
         self.ability_label.setText("")
         self.battery_label.setText("")
+
+    def set_identity(self, profile_name: str, accid: str):
+        self._profile_name = profile_name
+        self._robot_accid = accid
+        self._refresh_identity_label()
+
+    def set_identity_error(self, message: str):
+        self._profile_name = ""
+        self._robot_accid = ""
+        self.set_disconnected()
+        self.sn_label.setText(message)
+
+    def _refresh_identity_label(self):
+        parts = [part for part in (self._profile_name, self._robot_accid) if part]
+        self.sn_label.setText(" · ".join(parts))

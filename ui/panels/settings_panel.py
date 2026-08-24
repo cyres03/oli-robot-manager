@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSignal
 from config import ROBOT_CONFIG
+from models.robot_profile import RobotProfile
 from services import credential_store
 
 
@@ -23,6 +24,12 @@ class SettingsPanel(QWidget):
         title = QLabel("设置")
         title.setStyleSheet("font-size: 20px; font-weight: 700; color: #1D2129; border: none; background: transparent;")
         layout.addWidget(title)
+
+        self.profile_status = QLabel("机器人型号: 未识别")
+        self.profile_status.setStyleSheet(
+            "color: #4E5969; font-size: 12px; background: transparent;"
+        )
+        layout.addWidget(self.profile_status)
 
         # Robot connection settings
         conn_group = QGroupBox("机器人连接设置")
@@ -115,6 +122,31 @@ class SettingsPanel(QWidget):
             f"主控: {'已保存' if main_saved else '未保存'} | "
             f"感知: {'已保存' if perception_saved else '未保存'}"
         )
+
+    def apply_profile(self, profile: RobotProfile | None):
+        if profile and ROBOT_CONFIG.ws_accid:
+            self.profile_status.setText(
+                f"机器人型号: {profile.display_name} · {ROBOT_CONFIG.ws_accid}"
+            )
+        else:
+            self.profile_status.setText("机器人型号: 未识别 · 控制已锁定")
+        values = {
+            "mcp_url": ROBOT_CONFIG.mcp_url,
+            "websocket_url": ROBOT_CONFIG.websocket_url,
+            "ws_accid": ROBOT_CONFIG.ws_accid,
+            "main_control_ip": ROBOT_CONFIG.main_control_ip,
+            "main_control_user": ROBOT_CONFIG.main_control_user,
+            "perception_ip": ROBOT_CONFIG.perception_ip,
+            "perception_user": ROBOT_CONFIG.perception_user,
+            "expected_cpu_cores": ROBOT_CONFIG.expected_cpu_cores,
+        }
+        for key, value in values.items():
+            field = self._fields.get(key)
+            if isinstance(field, QLineEdit):
+                field.setText(str(value))
+            elif isinstance(field, QSpinBox):
+                field.setValue(int(value))
+        self.refresh_credential_status()
 
     def _save_settings(self):
         changes = {}

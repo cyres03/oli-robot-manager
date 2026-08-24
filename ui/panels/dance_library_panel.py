@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
 )
 from PyQt6.QtCore import Qt, QTimer
+from models.robot_profile import RobotProfile
 from services.dance_service import DanceService
 from ui.widgets.dance_card import DanceCard
 from ui.widgets.sequencer_editor import SequencerEditor
@@ -76,6 +77,7 @@ class DanceLibraryPanel(QWidget):
     def __init__(self, dance_service: DanceService, parent=None):
         super().__init__(parent)
         self._service = dance_service
+        self._allowed_tools: frozenset[str] | None = None
         self._dance_cards: dict[str, DanceCard] = {}
         self._motion_cards: dict[str, DanceCard] = {}
         self._walk_timer: QTimer | None = None
@@ -116,8 +118,8 @@ class DanceLibraryPanel(QWidget):
         layout.addWidget(self.action_status_label)
 
         # Tabs: Dances | Motions | Walk | Sequencer
-        tabs = QTabWidget()
-        tabs.setStyleSheet("""
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet("""
             QTabWidget::pane { border: 1px solid #E5E6EB; background: #FFFFFF; border-radius: 8px; }
             QTabBar::tab { background: #F2F3F5; color: #86909C; padding: 8px 18px; border: none; font-size: 12px; margin-right: 2px; }
             QTabBar::tab:selected { background: #FFFFFF; color: #6C5CE7; border-bottom: 2px solid #6C5CE7; }
@@ -130,7 +132,7 @@ class DanceLibraryPanel(QWidget):
         dance_scroll.setWidgetResizable(True)
         dance_scroll.setWidget(self.dance_grid)
         dance_scroll.setStyleSheet("QScrollArea { border: none; }")
-        tabs.addTab(dance_scroll, "舞蹈 (Dances)")
+        self.tabs.addTab(dance_scroll, "舞蹈 (Dances)")
 
         # Tab 2: Motions
         self.motion_grid = FlowGrid()
@@ -138,7 +140,7 @@ class DanceLibraryPanel(QWidget):
         motion_scroll.setWidgetResizable(True)
         motion_scroll.setWidget(self.motion_grid)
         motion_scroll.setStyleSheet("QScrollArea { border: none; }")
-        tabs.addTab(motion_scroll, "动作 (Motions)")
+        self.tabs.addTab(motion_scroll, "动作 (Motions)")
 
         # Tab 3: Walking
         walk_tab = QWidget()
@@ -173,7 +175,7 @@ class DanceLibraryPanel(QWidget):
         self._walk_timer.setInterval(200)
         self._walk_timer.timeout.connect(self._send_walk_velocity_once)
         walk_layout.addStretch()
-        tabs.addTab(walk_tab, "行走")
+        self.tabs.addTab(walk_tab, "行走")
 
         # Tab 4: Sequencer
         seq_tab = QWidget()
@@ -181,9 +183,9 @@ class DanceLibraryPanel(QWidget):
         seq_layout.setContentsMargins(8, 8, 8, 8)
         self.sequencer = SequencerEditor()
         seq_layout.addWidget(self.sequencer)
-        tabs.addTab(seq_tab, "序列器")
+        self.tabs.addTab(seq_tab, "序列器")
 
-        layout.addWidget(tabs)
+        layout.addWidget(self.tabs)
 
     def _connect_signals(self):
         self.refresh_dances_btn.clicked.connect(self._service.load_dances)
@@ -218,6 +220,7 @@ class DanceLibraryPanel(QWidget):
             count = self._service.get_count(rc)
             card = DanceCard(cn, "dance", count, subtitle=f"{en} · {dur}s" if en else "")
             card.execute_clicked.connect(lambda n=rc: self._service.execute_dance(n))
+            card.setEnabled(self._tool_allowed("execute_dance"))
             self.dance_grid.add_card(card)
             self._dance_cards[rc] = card
             names.append(rc)
@@ -244,6 +247,7 @@ class DanceLibraryPanel(QWidget):
             if not unavailable_reason:
                 card.execute_clicked.connect(lambda n=en: self._service.execute_motion(n))
                 card.repeat_clicked.connect(lambda n=en: self._service.execute_motion_repeat(n, times=5, delay_ms=2000))
+            card.setEnabled(self._tool_allowed("execute_motion") and not unavailable_reason)
             self.motion_grid.add_card(card)
             self._motion_cards[en] = card
 
@@ -268,13 +272,44 @@ class DanceLibraryPanel(QWidget):
             self.stop_continuous_walk(reset_sliders=True, send_stop=True)
         self.action_status_label.setText(label)
         repeat_running = label.startswith("连续动作")
-        for card in list(self._dance_cards.values()) + list(self._motion_cards.values()):
-            card.setEnabled(not running)
-        self.refresh_dances_btn.setEnabled(not running)
-        self.refresh_motions_btn.setEnabled(not running)
-        self.motion_engine_btn.setEnabled(not running)
-        self.sequencer.setEnabled(not running)
+        for card in self._dance_cards.values():
+            card.setEnabled(not running and self._tool_allowed("execute_dance"))
+        for name, card in self._motion_cards.items():
+            card.setEnabled(
+                not running
+                and self._tool_allowed("execute_motion")
+                and name not in UNRELIABLE_MOTIONS
+            )
+        self.refresh_dances_btn.setEnabled(not running and self._tool_allowed("get_dances"))
+        self.refresh_motions_btn.setEnabled(not running and self._tool_allowed("get_motions"))
+        self.motion_engine_btn.setEnabled(not running and self._tool_allowed("set_motion_engine"))
+        self.sequencer.setEnabled(not running and self._tool_allowed("execute_motion"))
         self.stop_repeat_btn.setEnabled(repeat_running and running)
+
+    def apply_profile(self, profile: RobotProfile | None):
+        self._allowed_tools = profile.allowed_tools if profile else frozenset()
+        if not self._tool_allowed("set_walk_velocity"):
+            self.stop_continuous_walk(reset_sliders=True, send_stop=False)
+        self.refresh_dances_btn.setEnabled(self._tool_allowed("get_dances"))
+        self.refresh_motions_btn.setEnabled(self._tool_allowed("get_motions"))
+        self.motion_engine_btn.setEnabled(self._tool_allowed("set_motion_engine"))
+        self.apply_walk_btn.setEnabled(self._tool_allowed("set_walk_velocity"))
+        self.tabs.setTabEnabled(2, self._tool_allowed("set_walk_velocity"))
+        self.tabs.setTabEnabled(3, self._tool_allowed("execute_motion"))
+        self.sequencer.setEnabled(self._tool_allowed("execute_motion"))
+        for card in self._dance_cards.values():
+            card.setEnabled(self._tool_allowed("execute_dance"))
+        for name, card in self._motion_cards.items():
+            card.setEnabled(
+                self._tool_allowed("execute_motion") and name not in UNRELIABLE_MOTIONS
+            )
+        if profile and not self._tool_allowed("execute_motion"):
+            self.action_status_label.setText(
+                f"{profile.display_name} 当前仅开放动作与舞蹈列表查询"
+            )
+
+    def _tool_allowed(self, tool_name: str) -> bool:
+        return self._allowed_tools is None or tool_name in self._allowed_tools
 
     def _apply_walk(self):
         vx = self.slider_vx.value() / 100.0
@@ -308,7 +343,7 @@ class DanceLibraryPanel(QWidget):
             self.slider_vx.setValue(0)
             self.slider_vy.setValue(0)
             self.slider_yaw.setValue(0)
-        if send_stop:
+        if send_stop and self._tool_allowed("set_walk_velocity"):
             self._service.set_walk_velocity(0.0, 0.0, 0.0)
         self.apply_walk_btn.setText("应用速度")
         self.walk_status_label.setText("持续行走已停止")

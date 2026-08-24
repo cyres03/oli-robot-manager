@@ -25,5 +25,13 @@ class StatusBarWidget(QStatusBar):
     def _on_status(self, status: dict):
         for key, label in self._indicators.items():
             connected = status.get(key, False)
+            name = "MCP" if key == "mcp" else key.upper()
+            if connected is None:
+                label.setText(f"  {name} N/A")
+                label.setStyleSheet(
+                    "color: #86909C; font-size: 12px; background: transparent;"
+                )
+                continue
+            label.setText(f"  {name}")
             color = "#00B42A" if connected else "#F53F3F"
             label.setStyleSheet(f"color: {color}; font-size: 12px; background: transparent;")

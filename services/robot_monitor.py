@@ -29,6 +29,10 @@ class RobotMonitor(QThread):
         while self._running and not self.isInterruptionRequested():
             try:
                 accid = detect_accid_from_wifi()
+                if not accid:
+                    self.connected.emit(False)
+                    await asyncio.sleep(5)
+                    continue
                 async with websockets.connect(
                     ROBOT_CONFIG.websocket_url,
                     ping_interval=20, ping_timeout=10,

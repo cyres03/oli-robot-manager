@@ -22,13 +22,27 @@ class Application(QObject):
         db = DatabaseConnection()
         db.initialize_schema()
 
-        # 2. Auto-detect accid from connected WiFi
-        from config import detect_accid_from_wifi
-        accid = detect_accid_from_wifi()
-        ROBOT_CONFIG.ws_accid = accid or ""
+        # 2. Resolve robot identity and apply its profile
+        from config import detect_robot_identity
+        identity = detect_robot_identity()
+        ROBOT_CONFIG.apply_identity(identity)
 
         # 3. Create workers
-        self.mcp_worker = McpWorker(ROBOT_CONFIG.websocket_url, accid)
+        allowed_tools = (
+            ROBOT_CONFIG.active_profile.allowed_tools
+            if ROBOT_CONFIG.active_profile else frozenset()
+        )
+        self.mcp_worker = McpWorker(
+            ROBOT_CONFIG.websocket_url,
+            ROBOT_CONFIG.ws_accid,
+            allowed_tools=allowed_tools,
+        )
+        self.mcp_worker.update_target(
+            ROBOT_CONFIG.ws_accid or None,
+            allowed_tools,
+            ROBOT_CONFIG.websocket_url,
+            ROBOT_CONFIG.profile_key,
+        )
         self.mcp_worker.start()
 
         # 4. Robot monitor (persistent WebSocket for status)
@@ -56,6 +70,7 @@ class Application(QObject):
             mcp_worker=self.mcp_worker,
             robot_monitor=self.robot_monitor,
         )
+        self.main_window.apply_robot_identity(identity, initial=True)
 
     @property
     def window(self) -> MainWindow:

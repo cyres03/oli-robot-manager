@@ -8,8 +8,11 @@ from workers.mcp_worker import McpWorker
 
 
 def test_detection_returns_no_target_instead_of_default_oli(monkeypatch):
-    monkeypatch.setattr(config, "detect_accid_from_robot_portal", lambda: None)
-    monkeypatch.setattr(WifiManager, "get_robot_ssid", staticmethod(lambda: None))
+    monkeypatch.setattr(
+        WifiManager,
+        "get_connected_robot_ssids",
+        staticmethod(lambda: []),
+    )
 
     assert config.detect_accid_from_wifi() is None
 
@@ -56,4 +59,4 @@ def test_worker_rejects_unresolved_target_and_recovers(qapp):
     worker.call_tool("get_motions", {})
 
     assert connection_states[-1] is True
-    assert worker._pending_requests == [("get_motions", {})]
+    assert worker._pending_requests[0][:2] == ("get_motions", {})
