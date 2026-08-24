@@ -2,6 +2,9 @@
 Application composition root.
 Creates and wires all services, workers, and the MainWindow.
 """
+from pathlib import Path
+import sys
+
 from PyQt6.QtCore import QObject
 from config import ROBOT_CONFIG
 from database.connection import DatabaseConnection
@@ -12,7 +15,13 @@ from services.power_cycle_service import PowerCycleService
 from services.connection_service import ConnectionService
 from services.calibrate_service import CalibrateService
 from services.robot_monitor import RobotMonitor
+from services.managed_test_service import TestCaseService
 from ui.main_window import MainWindow
+
+
+def _resource_path(*parts: str) -> Path:
+    base = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+    return base.joinpath(*parts)
 
 
 class Application(QObject):
@@ -55,6 +64,11 @@ class Application(QObject):
         self.health_service = HealthCheckService()
         self.power_cycle_service = PowerCycleService(self.health_service)
         self.calibrate_service = CalibrateService(self.mcp_worker)
+        test_case_root = _resource_path("resources", "test_cases")
+        self.test_case_service = TestCaseService(
+            test_case_root / "cases.json",
+            test_case_root,
+        )
 
         # 6. Load persisted dance counts
         self.dance_service.load_all_counts()
@@ -69,6 +83,7 @@ class Application(QObject):
             calibrate_service=self.calibrate_service,
             mcp_worker=self.mcp_worker,
             robot_monitor=self.robot_monitor,
+            test_case_service=self.test_case_service,
         )
         self.main_window.apply_robot_identity(identity, initial=True)
 
@@ -77,5 +92,6 @@ class Application(QObject):
         return self.main_window
 
     def shutdown(self):
+        self.test_case_service.shutdown()
         self.mcp_worker.stop()
         self.robot_monitor.stop()

@@ -13,6 +13,7 @@ from services.health_check_service import HealthCheckService
 from services.power_cycle_service import PowerCycleService
 from services.connection_service import ConnectionService
 from services.calibrate_service import CalibrateService
+from services.managed_test_service import TestCaseService
 from services import credential_store
 from services.robot_monitor import RobotMonitor
 from network.ssh_client import current_robot_id
@@ -31,6 +32,7 @@ from ui.panels.settings_panel import SettingsPanel
 from ui.panels.calibrate_panel import CalibratePanel
 from ui.panels.control_panel import ControlPanel
 from ui.panels.acceptance_test_panel import AcceptanceTestPanel
+from ui.panels.managed_test_panel import TestCasePanel
 from ui.dialogs.ssh_terminal_window import open_native_ssh_terminal
 from ui.dialogs.password_dialog import PasswordDialog
 from config import ROBOT_CONFIG
@@ -50,6 +52,7 @@ class MainWindow(QMainWindow):
         self._calibrate_service: CalibrateService | None = None
         self._mcp_worker: McpWorker | None = None
         self._robot_monitor: RobotMonitor | None = None
+        self._test_case_service: TestCaseService | None = None
         self._stack_effect: QGraphicsOpacityEffect | None = None
         self._stack_fade_animation: QPropertyAnimation | None = None
         self._robot_identity_timer: QTimer | None = None
@@ -80,6 +83,7 @@ class MainWindow(QMainWindow):
         calibrate_service: CalibrateService = None,
         mcp_worker: McpWorker = None,
         robot_monitor: RobotMonitor = None,
+        test_case_service: TestCaseService = None,
     ):
         self._dance_service = dance_service
         self._health_service = health_service
@@ -88,6 +92,7 @@ class MainWindow(QMainWindow):
         self._calibrate_service = calibrate_service
         self._mcp_worker = mcp_worker
         self._robot_monitor = robot_monitor
+        self._test_case_service = test_case_service
 
         self._build_content()
         self._wire_signals()
@@ -130,6 +135,7 @@ class MainWindow(QMainWindow):
         self.health_panel = HealthCheckPanel(self._health_service)
         self.calibrate_panel = CalibratePanel(self._calibrate_service)
         self.settings_panel = SettingsPanel()
+        self.test_case_panel = TestCasePanel(self._test_case_service)
 
         self.stack.addWidget(self.dance_panel)      # 0: 舞蹈&动作库
         self.stack.addWidget(self.control_panel)     # 1: 基础控制
@@ -137,6 +143,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.health_panel)      # 3: 健康检查
         self.stack.addWidget(self.calibrate_panel)   # 4: 校零
         self.stack.addWidget(self.settings_panel)    # 5: 设置
+        self.stack.addWidget(self.test_case_panel)   # 6: 测试用例
         self.stack.setCurrentIndex(0)
         self._setup_stack_animation()
 
@@ -221,6 +228,14 @@ class MainWindow(QMainWindow):
         self.settings_panel.credentials_clear_requested.connect(
             self._clear_current_robot_credentials
         )
+        self._test_case_service.ssh_authorization_required.connect(
+            self._authorize_ssh_for_test_case
+        )
+        self._test_case_service.error_occurred.connect(
+            lambda message: self.terminal.append_log(
+                f"[测试用例] {message}", "error"
+            )
+        )
 
         # Control panel actions
         self.control_panel.action_requested.connect(self._on_control_action)
@@ -281,6 +296,12 @@ class MainWindow(QMainWindow):
             self.calibrate_panel.apply_profile(profile)
         if hasattr(self, "settings_panel"):
             self.settings_panel.apply_profile(profile)
+        if self._test_case_service:
+            self._test_case_service.apply_context(
+                profile,
+                ROBOT_CONFIG.ws_accid if ready else "",
+                ROBOT_CONFIG.firmware_version,
+            )
 
         if ready and profile and identity.accid:
             self._dance_service.switch_resource_context(
@@ -387,6 +408,7 @@ class MainWindow(QMainWindow):
         index_map = {
             "dance_library": 0,
             "controls": 1,
+            "test_cases": 6,
             "acceptance": 2,
             "log_analysis": 2,
             "health_check": 3,
@@ -458,6 +480,12 @@ class MainWindow(QMainWindow):
             )
             self._dance_service.load_dances()
             self._dance_service.load_motions()
+            if self._test_case_service:
+                self._test_case_service.apply_context(
+                    ROBOT_CONFIG.active_profile,
+                    ROBOT_CONFIG.ws_accid,
+                    firmware_version,
+                )
         status = info.get("robot_status", "")
         battery = info.get("battery", "")
         log_key = (status, battery)
@@ -511,6 +539,23 @@ class MainWindow(QMainWindow):
             lambda: self._health_service.finish_ssh_authorization(True, ""),
             lambda detail: self._health_service.finish_ssh_authorization(
                 False, detail
+            ),
+        )
+
+    def _authorize_ssh_for_test_case(
+        self,
+        host: str,
+        username: str,
+        robot_id: str,
+        case_id: str,
+    ):
+        self._request_ssh_key_authorization(
+            host,
+            username,
+            robot_id,
+            lambda: self._test_case_service.retry_after_authorization(case_id),
+            lambda detail: self._test_case_service.cancel_authorization(
+                case_id, detail
             ),
         )
 

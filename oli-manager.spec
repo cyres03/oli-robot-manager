@@ -7,6 +7,8 @@ a = Analysis(
         ('resources/styles/dark_theme.qss', 'resources/styles'),
         ('resources/logo/oli_manager_logo.ico', 'resources/logo'),
         ('resources/logo/oli_manager_logo.svg', 'resources/logo'),
+        ('resources/test_cases/cases.json', 'resources/test_cases'),
+        ('resources/test_cases/scripts/snapshot.py', 'resources/test_cases/scripts'),
     ],
     hiddenimports=['websockets', 'paramiko', 'httpx', 'PyQt6.QtSvg', 'PyQt6.QtSvgWidgets'],
     hookspath=[],
