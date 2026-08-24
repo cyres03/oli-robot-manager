@@ -1,5 +1,6 @@
 from pathlib import Path
 import hashlib
+import os
 
 from models.robot_profile import L04_PROFILE
 from models.managed_case import (
@@ -330,8 +331,9 @@ def test_downloaded_artifact_has_private_permissions(tmp_path, monkeypatch):
     worker.run()
 
     artifact_path = Path(results[0].artifacts[0])
-    assert stat.S_IMODE(artifact_path.parent.stat().st_mode) == 0o700
-    assert stat.S_IMODE(artifact_path.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(artifact_path.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(artifact_path.stat().st_mode) == 0o600
 
 
 def test_worker_preserves_artifact_paths_with_duplicate_basenames(tmp_path, monkeypatch):

@@ -1,4 +1,5 @@
 from datetime import datetime
+import os
 from pathlib import Path
 import stat
 
@@ -121,8 +122,9 @@ def test_service_persists_current_result(tmp_path, monkeypatch):
     result_file = tmp_path / "new-session" / "result.json"
     assert result_file.is_file()
     assert '"status": "PASS"' in result_file.read_text(encoding="utf-8")
-    assert stat.S_IMODE(result_file.parent.stat().st_mode) == 0o700
-    assert stat.S_IMODE(result_file.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(result_file.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(result_file.stat().st_mode) == 0o600
 
 
 def test_late_authorization_request_is_dropped_after_context_switch(tmp_path, monkeypatch):
