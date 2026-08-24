@@ -29,26 +29,37 @@ def _decode_output(data: bytes) -> str:
     encodings = ["utf-8"]
     if platform.system() == "Windows":
         encodings.extend([
-            locale.getpreferredencoding(False),
-            "mbcs",
-            "oem",
             "gb18030",
             "cp950",
             "cp932",
+            locale.getpreferredencoding(False),
+            "mbcs",
+            "oem",
         ])
     else:
         encodings.append(locale.getpreferredencoding(False))
 
     tried = set()
+    candidates = []
     for encoding in encodings:
         normalized = encoding.lower()
         if normalized in tried:
             continue
         tried.add(normalized)
         try:
-            return data.decode(encoding)
+            candidates.append(data.decode(encoding))
         except (LookupError, UnicodeDecodeError):
             continue
+    if candidates:
+        markers = (
+            "SSID", "Name", "名称", "名稱", "State", "状态", "狀態",
+            "Signal", "信号", "訊號", "Description", "描述", "说明", "說明",
+            "connected", "disconnected", "已连接", "已連線",
+        )
+        return max(
+            candidates,
+            key=lambda text: sum(text.count(marker) for marker in markers),
+        )
     return data.decode("utf-8", errors="replace")
 
 
@@ -120,19 +131,23 @@ class WifiManager:
             if not block.strip():
                 continue
             # Match field:value pairs - fields can be Chinese or English
-            name_m = re.search(r"^\s*(?:Name|名称)\s*:\s*(.+)$", block, re.MULTILINE)
+            name_m = re.search(r"^\s*(?:Name|名称|名稱)\s*:\s*(.+)$", block, re.MULTILINE)
             if not name_m:
                 continue
             ssid_m = re.search(r"^\s*SSID\s*:\s*(.*)$", block, re.MULTILINE)
-            signal_m = re.search(r"^\s*(?:Signal|信号)\s*:\s*(\d+)%", block, re.MULTILINE)
-            state_m = re.search(r"^\s*(?:State|状态)\s*:\s*(.+)$", block, re.MULTILINE)
-            desc_m = re.search(r"^\s*(?:Description|描述|说明)\s*:\s*(.+)$", block, re.MULTILINE)
+            signal_m = re.search(r"^\s*(?:Signal|信号|訊號)\s*:\s*(\d+)%", block, re.MULTILINE)
+            state_m = re.search(r"^\s*(?:State|状态|狀態)\s*:\s*(.+)$", block, re.MULTILINE)
+            desc_m = re.search(r"^\s*(?:Description|描述|说明|說明)\s*:\s*(.+)$", block, re.MULTILINE)
             state = state_m.group(1).strip() if state_m else ""
             iface = {
                 "name": name_m.group(1).strip(),
                 "ssid": ssid_m.group(1).strip() if ssid_m else "",
                 "description": desc_m.group(1).strip() if desc_m else "",
-                "state": "connected" if state.lower() == "connected" or state == "已连接" else "disconnected",
+                "state": (
+                    "connected"
+                    if state.lower() == "connected" or state in {"已连接", "已連線"}
+                    else "disconnected"
+                ),
                 "signal": int(signal_m.group(1)) if signal_m else 0,
             }
             ifaces.append(iface)
@@ -333,7 +348,7 @@ class WifiManager:
                 m = re.search(r"SSID \d+ : (.+)", line)
                 if m:
                     current_ssid = m.group(1).strip()
-                sig = re.search(r"(?:Signal|信号)\s*:\s*(\d+)%", line)
+                sig = re.search(r"(?:Signal|信号|訊號)\s*:\s*(\d+)%", line)
                 if sig and current_ssid:
                     # Keep best signal for each SSID
                     signal = int(sig.group(1))

@@ -112,6 +112,21 @@ def test_windows_decodes_utf8_netsh_output(monkeypatch):
     assert WifiManager.get_robot_ssid() == "HU_D04_01_125_5G"
 
 
+def test_windows_decode_prefers_valid_netsh_fields_over_system_codepage(monkeypatch):
+    output = "名称 : WLAN\n状态 : 已连接\nSSID : HU_D04_01_127_5G\n信号 : 91%\n".encode("gb18030")
+    monkeypatch.setattr(wifi_module.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        wifi_module.locale,
+        "getpreferredencoding",
+        lambda _do_setlocale=False: "cp1252",
+    )
+
+    decoded = wifi_module._decode_output(output)
+
+    assert "名称 : WLAN" in decoded
+    assert "状态 : 已连接" in decoded
+
+
 def test_windows_chinese_single_adapter_scans_d04_and_l04(monkeypatch):
     interfaces = """
     名称                   : WLAN
