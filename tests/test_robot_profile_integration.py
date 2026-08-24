@@ -75,7 +75,7 @@ def test_worker_blocks_l04_control_and_drops_stale_queue(qapp):
     worker.call_tool("get_motions", {})
 
     assert errors == [("execute_motion", "当前机器人型号未开放此能力")]
-    assert worker._pending_requests == [("get_motions", {})]
+    assert worker._pending_requests[0][:2] == ("get_motions", {})
 
     worker.update_target("HU_L04_01_092", L04_PROFILE.allowed_tools)
 

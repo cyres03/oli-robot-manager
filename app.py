@@ -37,6 +37,12 @@ class Application(QObject):
             ROBOT_CONFIG.ws_accid,
             allowed_tools=allowed_tools,
         )
+        self.mcp_worker.update_target(
+            ROBOT_CONFIG.ws_accid or None,
+            allowed_tools,
+            ROBOT_CONFIG.websocket_url,
+            ROBOT_CONFIG.profile_key,
+        )
         self.mcp_worker.start()
 
         # 4. Robot monitor (persistent WebSocket for status)

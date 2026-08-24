@@ -59,4 +59,4 @@ def test_worker_rejects_unresolved_target_and_recovers(qapp):
     worker.call_tool("get_motions", {})
 
     assert connection_states[-1] is True
-    assert worker._pending_requests == [("get_motions", {})]
+    assert worker._pending_requests[0][:2] == ("get_motions", {})

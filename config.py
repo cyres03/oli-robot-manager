@@ -151,6 +151,7 @@ class RobotConfig:
     expected_motor_count: int | None = None
     allow_cpu_repair: bool = False
     allow_time_repair: bool = False
+    firmware_version: str = "unknown"
 
     def apply_identity(self, identity: RobotIdentity) -> bool:
         if not identity.ready or not identity.accid or not identity.profile:
@@ -178,6 +179,7 @@ class RobotConfig:
         self.expected_imu_hz = profile.expected_imu_hz
         self.allow_cpu_repair = profile.allow_cpu_repair
         self.allow_time_repair = profile.allow_time_repair
+        self.firmware_version = "unknown"
         return True
 
     def clear_identity(self):
@@ -189,6 +191,7 @@ class RobotConfig:
         self.expected_motor_count = None
         self.allow_cpu_repair = False
         self.allow_time_repair = False
+        self.firmware_version = "unknown"
 
 
 @dataclass

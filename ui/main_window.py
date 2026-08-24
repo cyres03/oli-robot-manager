@@ -20,6 +20,7 @@ from workers.mcp_worker import McpWorker
 from workers.ssh_key_install_worker import SshKeyInstallWorker
 from workers.ssh_worker import SshWorker
 from models.robot_profile import RobotIdentity, RobotIdentityStatus
+from models.workspace import resolve_workspace
 from ui.widgets.sidebar import Sidebar
 from ui.widgets.status_bar_widget import StatusBarWidget
 from ui.widgets.status_banner import StatusBanner
@@ -58,6 +59,7 @@ class MainWindow(QMainWindow):
         self._last_status_log_key: tuple[str, str] | None = None
         self._last_status_log_at = 0.0
         self._last_identity_status_key: tuple[str, str] | None = None
+        self._active_workspace_key = "connection"
         self._was_minimized = False
         self._ui_log_path = os.path.join(
             os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
@@ -251,6 +253,7 @@ class MainWindow(QMainWindow):
         previous_accid = ROBOT_CONFIG.ws_accid
         ready = ROBOT_CONFIG.apply_identity(identity)
         profile = ROBOT_CONFIG.active_profile
+        workspace = resolve_workspace(profile)
         allowed_tools = profile.allowed_tools if profile else frozenset()
 
         self._connection_service.update_ssh(False)
@@ -259,8 +262,13 @@ class MainWindow(QMainWindow):
                 ROBOT_CONFIG.ws_accid if ready else None,
                 allowed_tools,
                 ROBOT_CONFIG.websocket_url,
+                profile.key if profile else "",
             )
         self.sidebar.apply_profile(profile)
+        self.sidebar.apply_workspace(workspace)
+        if workspace.key != self._active_workspace_key:
+            self._active_workspace_key = workspace.key
+            self._on_navigate(workspace.default_route)
         if hasattr(self, "acceptance_panel"):
             self.acceptance_panel.apply_profile(profile)
         if hasattr(self, "control_panel"):
@@ -273,17 +281,23 @@ class MainWindow(QMainWindow):
             self.settings_panel.apply_profile(profile)
 
         if ready and profile and identity.accid:
+            self._dance_service.switch_resource_context(
+                profile.key,
+                identity.accid,
+                ROBOT_CONFIG.firmware_version,
+            )
             self.status_banner.set_identity(profile.display_name, identity.accid)
             if hasattr(self, "settings_panel"):
                 self.settings_panel.refresh_credential_status()
             status_message = message or identity.message
             if status_message and (initial or previous_accid != identity.accid):
                 self.terminal.append_log(f"[系统] {status_message}", "pass")
-            if not initial and previous_accid != identity.accid:
+            if initial or previous_accid != identity.accid:
                 self._dance_service.load_dances()
                 self._dance_service.load_motions()
             return
 
+        self._dance_service.switch_resource_context("", "", "")
         error_message = identity.message or "机器人身份未识别"
         self.status_banner.set_identity_error(error_message)
         status_key = (identity.status.value, error_message)
@@ -365,6 +379,7 @@ class MainWindow(QMainWindow):
             "dance_library": 0,
             "controls": 1,
             "acceptance": 2,
+            "log_analysis": 2,
             "health_check": 3,
             "power_cycle": 2,
             "calibrate": 4,
@@ -373,6 +388,14 @@ class MainWindow(QMainWindow):
         idx = index_map.get(key, 0)
         if self.stack:
             self._switch_page(idx)
+            if key == "log_analysis":
+                self.acceptance_panel.tabs.setCurrentWidget(
+                    self.acceptance_panel.log_analyzer
+                )
+            elif key == "acceptance":
+                self.acceptance_panel.tabs.setCurrentWidget(
+                    self.acceptance_panel.auto_tab
+                )
         self.status_bar_widget.setVisible(True)
 
     def _setup_stack_animation(self):
@@ -410,6 +433,22 @@ class MainWindow(QMainWindow):
 
     def _on_robot_status(self, info: dict):
         """Log status changes to terminal."""
+        firmware_version = str(info.get("version", "")).strip()
+        if (
+            firmware_version
+            and firmware_version != "?"
+            and firmware_version != ROBOT_CONFIG.firmware_version
+            and ROBOT_CONFIG.active_profile
+            and ROBOT_CONFIG.ws_accid
+        ):
+            ROBOT_CONFIG.firmware_version = firmware_version
+            self._dance_service.switch_resource_context(
+                ROBOT_CONFIG.profile_key,
+                ROBOT_CONFIG.ws_accid,
+                firmware_version,
+            )
+            self._dance_service.load_dances()
+            self._dance_service.load_motions()
         status = info.get("robot_status", "")
         battery = info.get("battery", "")
         log_key = (status, battery)

@@ -6,6 +6,7 @@ Dance & motion library service.
 - Tracking execution counts in-memory + SQLite
 """
 import json
+from dataclasses import dataclass
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 from config import ROBOT_CONFIG
 from workers.mcp_worker import McpWorker
@@ -20,6 +21,33 @@ KNOWN_MOTIONS = [
     "idol_dance_1", "idol_dance_2", "power_up_dance",
     "shake_hands", "raise_and_int",
 ]
+
+
+@dataclass(frozen=True)
+class ResourceContext:
+    profile_key: str
+    accid: str
+    firmware: str
+    resource_type: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "profile_key": self.profile_key,
+            "accid": self.accid,
+            "firmware": self.firmware,
+            "resource_type": self.resource_type,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> "ResourceContext | None":
+        if not isinstance(value, dict):
+            return None
+        return cls(
+            str(value.get("profile_key", "")),
+            str(value.get("accid", "")),
+            str(value.get("firmware", "")),
+            str(value.get("resource_type", "")),
+        )
 
 
 class DanceService(QObject):
@@ -42,6 +70,7 @@ class DanceService(QObject):
         self._counts: dict[tuple[str, str], int] = {}
         self._dances: list[dict] = []
         self._motions: list[dict] = []
+        self._resource_context: ResourceContext | None = None
         self._active_sequence: DanceSequence | None = None
         self._current_step_index = 0
         self._pending_name = ""
@@ -60,10 +89,52 @@ class DanceService(QObject):
     # ---- Load ----
 
     def load_dances(self):
-        self._mcp.call_tool("get_dances", {})
+        if not self._resource_context:
+            self.error_occurred.emit("机器人资源会话尚未就绪")
+            return
+        self._mcp.call_tool(
+            "get_dances", {}, self._resource_request_context("dance").to_dict(),
+        )
 
     def load_motions(self):
-        self._mcp.call_tool("get_motions", {})
+        if not self._resource_context:
+            self.error_occurred.emit("机器人资源会话尚未就绪")
+            return
+        self._mcp.call_tool(
+            "get_motions", {}, self._resource_request_context("motion").to_dict(),
+        )
+
+    def switch_resource_context(
+        self,
+        profile_key: str,
+        accid: str,
+        firmware: str = "",
+    ):
+        next_context = (
+            ResourceContext(profile_key, accid, firmware)
+            if profile_key and accid else None
+        )
+        if next_context == self._resource_context:
+            return
+        self._resource_context = next_context
+        self._dances = []
+        self._motions = []
+        self._active_sequence = None
+        self._clear_repeat_motion()
+        self._busy = False
+        self.dance_list_loaded.emit([])
+        self.motion_list_loaded.emit([])
+        self.action_state_changed.emit(False, "资源会话已切换")
+
+    def _resource_request_context(self, resource_type: str) -> ResourceContext:
+        if not self._resource_context:
+            return ResourceContext("", "", "", resource_type)
+        return ResourceContext(
+            self._resource_context.profile_key,
+            self._resource_context.accid,
+            self._resource_context.firmware,
+            resource_type,
+        )
 
     # ---- Execute ----
 
@@ -228,6 +299,17 @@ class DanceService(QObject):
     # ---- MCP result handlers ----
 
     def _on_tool_result(self, tool_name: str, result):
+        target_context = result.get("_target_context", {}) if isinstance(result, dict) else {}
+        response_context = ResourceContext.from_dict(
+            target_context.get("request_context") if isinstance(target_context, dict) else None
+        )
+        if tool_name in {"get_dances", "get_motions"}:
+            expected_type = "dance" if tool_name == "get_dances" else "motion"
+            if (
+                not response_context
+                or response_context != self._resource_request_context(expected_type)
+            ):
+                return
         if tool_name == "get_dances":
             content = result.get("content", [])
             if content and isinstance(content[0], str):
@@ -247,9 +329,8 @@ class DanceService(QObject):
                 try:
                     data = json.loads(content[0])
                     motions = data.get("motion_list", [])
-                    if motions:
-                        self._motions = motions
-                        self.motion_list_loaded.emit(self._motions)
+                    self._motions = motions
+                    self.motion_list_loaded.emit(self._motions)
                 except json.JSONDecodeError:
                     pass
 
@@ -326,6 +407,10 @@ class DanceService(QObject):
             self.error_occurred.emit(f"动作已完成，但自动切回拟人行走模式失败: {post_action}")
 
     # ---- Accessors ----
+
+    @property
+    def resource_context(self) -> ResourceContext | None:
+        return self._resource_context
 
     @property
     def dances(self) -> list[dict]:

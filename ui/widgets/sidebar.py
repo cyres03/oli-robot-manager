@@ -6,6 +6,7 @@ from PyQt6.QtCore import pyqtSignal, QTimer, QEasingCurve, QPropertyAnimation, Q
 from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtSvgWidgets import QSvgWidget
 from models.robot_profile import CapabilityState, RobotProfile
+from models.workspace import WorkspaceDefinition
 from network.wifi_manager import WifiManager
 
 
@@ -284,6 +285,36 @@ class Sidebar(QFrame):
         self._buttons["calibrate"].setEnabled(bool(
             profile and profile.capability("calibration") == CapabilityState.SUPPORTED
         ))
+
+    def apply_workspace(self, workspace: WorkspaceDefinition):
+        route_map = {route.key: route.label for route in workspace.routes}
+        for key, button in self._buttons.items():
+            visible = key in route_map
+            button.setVisible(visible)
+            if visible:
+                button.setText(f"  {route_map[key]}")
+        if "log_analysis" in route_map and "log_analysis" not in self._buttons:
+            button = SidebarNavButton(
+                f"  {route_map['log_analysis']}", self._nav_palette,
+            )
+            button.setObjectName("sidebarNav")
+            button.setCheckable(True)
+            button.clicked.connect(
+                lambda checked: self._on_click("log_analysis")
+            )
+            layout = self.layout()
+            settings_index = layout.indexOf(self._buttons["settings"])
+            layout.insertWidget(settings_index, button)
+            self._buttons["log_analysis"] = button
+        elif "log_analysis" in self._buttons:
+            self._buttons["log_analysis"].setVisible("log_analysis" in route_map)
+            if "log_analysis" in route_map:
+                self._buttons["log_analysis"].setText(
+                    f"  {route_map['log_analysis']}"
+                )
+        active = workspace.default_route
+        if active in self._buttons:
+            self.set_active(active)
 
     def refresh_wifi_status(self):
         ssid = WifiManager.get_robot_ssid() or WifiManager.get_current_ssid()
