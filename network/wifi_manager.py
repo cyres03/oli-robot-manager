@@ -5,6 +5,7 @@ import platform
 import subprocess
 import re
 import sys
+import locale
 from typing import Optional
 
 
@@ -15,14 +16,49 @@ def _no_window():
     return {}
 
 
+def _decode_output(data: bytes) -> str:
+    if not data:
+        return ""
+
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")) or b"\x00" in data[:80]:
+        try:
+            return data.decode("utf-16")
+        except UnicodeDecodeError:
+            pass
+
+    encodings = ["utf-8"]
+    if platform.system() == "Windows":
+        encodings.extend([
+            locale.getpreferredencoding(False),
+            "mbcs",
+            "oem",
+            "gb18030",
+            "cp950",
+            "cp932",
+        ])
+    else:
+        encodings.append(locale.getpreferredencoding(False))
+
+    tried = set()
+    for encoding in encodings:
+        normalized = encoding.lower()
+        if normalized in tried:
+            continue
+        tried.add(normalized)
+        try:
+            return data.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
 def _run(args: list[str]) -> str:
     try:
         result = subprocess.run(
-            args, capture_output=True, text=True, timeout=15,
-            encoding="utf-8", errors="replace",
+            args, capture_output=True, timeout=15,
             **_no_window(),
         )
-        return result.stdout
+        return _decode_output(result.stdout)
     except Exception:
         return ""
 
@@ -90,7 +126,7 @@ class WifiManager:
             ssid_m = re.search(r"^\s*SSID\s*:\s*(.*)$", block, re.MULTILINE)
             signal_m = re.search(r"^\s*(?:Signal|信号)\s*:\s*(\d+)%", block, re.MULTILINE)
             state_m = re.search(r"^\s*(?:State|状态)\s*:\s*(.+)$", block, re.MULTILINE)
-            desc_m = re.search(r"^\s*(?:Description|说明)\s*:\s*(.+)$", block, re.MULTILINE)
+            desc_m = re.search(r"^\s*(?:Description|描述|说明)\s*:\s*(.+)$", block, re.MULTILINE)
             state = state_m.group(1).strip() if state_m else ""
             iface = {
                 "name": name_m.group(1).strip(),
@@ -153,14 +189,18 @@ class WifiManager:
         import tempfile, os, time
 
         # Pick best interface: prefer USB/WLAN 2 for robot WiFi
+        interfaces = WifiManager._get_all_interfaces()
         iface_name = None
-        for iface in WifiManager._get_all_interfaces():
+        for iface in interfaces:
             desc = iface.get("description", "")
             if "USB" in desc.upper() or "2" in iface.get("name", ""):
                 iface_name = iface.get("name")
                 break
         if not iface_name:
-            iface_name = "WLAN"
+            iface_name = next(
+                (iface.get("name") for iface in interfaces if iface.get("name")),
+                "WLAN",
+            )
 
         # Method 1: Create profile if needed
         profile_xml = f"""<?xml version="1.0"?>
