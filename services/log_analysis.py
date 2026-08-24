@@ -115,6 +115,11 @@ def _duration_seconds(start: str, end: str) -> float | None:
         return None
 
 
+def _within_seconds(start: str, end: str, maximum: float) -> bool:
+    duration = _duration_seconds(start, end)
+    return duration is not None and 0 <= duration <= maximum
+
+
 def _summarize_motor_versions(lines: list[str]) -> str:
     versions = []
     motor_ids = set()
@@ -181,7 +186,14 @@ def _analyze_oli(lines: list[str]) -> list[LogFinding]:
         if match:
             branches.append((number, line, match.groups()))
 
-    if topology_failures or f10d_exits:
+    missing_branch = [
+        (number, line) for number, line in indexed
+        if re.search(r"\[[^]]+\] 的所有电机找不到", line)
+    ]
+    has_topology_evidence = bool(
+        topology_failures or mismatches or branches or missing_branch
+    )
+    if has_topology_evidence:
         details = []
         evidence = []
         if mismatches:
@@ -197,10 +209,6 @@ def _analyze_oli(lines: list[str]) -> list[LogFinding]:
                 f"实际 Slave {actual_slave} port{actual_port}"
             )
             evidence.append((number, line))
-        missing_branch = [
-            (number, line) for number, line in indexed
-            if re.search(r"\[[^]]+\] 的所有电机找不到", line)
-        ]
         if missing_branch:
             branch_name = re.search(r"\[([^]]+)\] 的所有电机找不到", missing_branch[0][1]).group(1)
             details.append(f"{branch_name} 分支全部电机未被识别")
@@ -221,6 +229,19 @@ def _analyze_oli(lines: list[str]) -> list[LogFinding]:
             "error",
             ordered_evidence,
             count=max(len(topology_failures), len(f10d_exits), 1),
+            resolved=False,
+        ))
+    elif f10d_exits:
+        evidence = f10d_exits[:1] + f10d_exits[-1:]
+        findings.append(_finding(
+            "OLI_ETHERCAT_MASTER_EXIT_LOOP",
+            "主站",
+            "EtherCAT 主站异常退出",
+            f"主站启动 {len(master_starts)} 次，以 0xf10d 退出 {len(f10d_exits)} 次；"
+            "日志中没有足够拓扑证据，不能归类为拓扑识别失败",
+            "error",
+            evidence,
+            count=len(f10d_exits),
             resolved=False,
         ))
     return findings
@@ -247,29 +268,76 @@ def _analyze_luna(lines: list[str]) -> list[LogFinding]:
         if match:
             enabled.append((number, line, int(match.group(1))))
 
-    offline_motors = sorted({motor for _, _, motor in offline})
-    enabled_motors = sorted({motor for _, _, motor in enabled})
-    if power_off and power_on and offline_motors and offline_motors == enabled_motors:
-        first_offline = (offline[0][0], offline[0][1])
-        last_enabled = (enabled[-1][0], enabled[-1][1])
-        duration = _duration_seconds(_timestamp(first_offline[1]), _timestamp(last_enabled[1]))
-        duration_text = f"，离线到全部恢复约 {duration:.1f} 秒" if duration is not None else ""
+    for power_off_index, off_event in enumerate(power_off):
+        next_off_line = (
+            power_off[power_off_index + 1][0]
+            if power_off_index + 1 < len(power_off) else len(lines) + 1
+        )
+        on_event = next((
+            item for item in power_on
+            if off_event[0] < item[0] < next_off_line
+        ), None)
+        offline_window = [
+            item for item in offline
+            if off_event[0] < item[0] < (on_event[0] if on_event else next_off_line)
+        ]
+        if not offline_window:
+            continue
+
+        enabled_window = []
+        if on_event:
+            enabled_window = [
+                item for item in enabled
+                if on_event[0] < item[0] < next_off_line
+                and _within_seconds(_timestamp(on_event[1]), _timestamp(item[1]), 120.0)
+            ]
+        offline_motors = sorted({motor for _, _, motor in offline_window})
+        enabled_motors = sorted({motor for _, _, motor in enabled_window})
+        resolved = bool(on_event and offline_motors == enabled_motors)
+        first_offline = (offline_window[0][0], offline_window[0][1])
+        last_recovery = (
+            (enabled_window[-1][0], enabled_window[-1][1])
+            if enabled_window else (on_event or first_offline)
+        )
+        duration = _duration_seconds(
+            _timestamp(first_offline[1]), _timestamp(last_recovery[1])
+        )
+        duration_text = (
+            f"，离线到{'全部恢复' if resolved else '最后证据'}约 {duration:.1f} 秒"
+            if duration is not None else ""
+        )
         motor_range = (
             f"电机{offline_motors[0]}-{offline_motors[-1]}"
             if offline_motors == list(range(offline_motors[0], offline_motors[-1] + 1))
             else "电机" + ",".join(str(item) for item in offline_motors)
         )
-        evidence = [power_off[0], first_offline, power_on[-1], last_enabled]
+        missing = sorted(set(offline_motors) - set(enabled_motors))
+        evidence = [off_event, first_offline]
+        if on_event:
+            evidence.append(on_event)
+        if enabled_window:
+            evidence.append(last_recovery)
+        if resolved:
+            code = "LUNA_MOTOR_POWER_CYCLE"
+            title = "电机上下电期间暂时离线并恢复"
+            detail = (
+                f"PMS 关闭电机电源后 {motor_range} 离线；重新上电后全部 enabled"
+                f"{duration_text}。日志未包含 link_status/错误计数器 dump，不能据此定位硬件断点"
+            )
+            severity = "warning"
+        else:
+            code = "LUNA_MOTOR_POWER_INTERRUPTION"
+            title = "电机下电后未检测到完整恢复"
+            missing_text = ",".join(str(item) for item in missing) or "未知"
+            detail = (
+                f"PMS 关闭电机电源后 {motor_range} 离线；未检测到完整恢复，"
+                f"缺少 enabled 证据的电机: {missing_text}{duration_text}。"
+                "日志未包含 link_status/错误计数器 dump，不能据此定位硬件断点"
+            )
+            severity = "error"
         findings.append(_finding(
-            "LUNA_MOTOR_POWER_CYCLE",
-            "电源",
-            "电机上下电期间暂时离线并恢复",
-            f"PMS 关闭电机电源后 {motor_range} 离线；重新上电后全部 enabled{duration_text}。"
-            "日志未包含 link_status/错误计数器 dump，不能据此定位硬件断点",
-            "warning",
-            evidence,
-            count=1,
-            resolved=True,
+            code, "电源", title, detail, severity, evidence,
+            count=1, resolved=resolved,
         ))
 
     hand_warnings = [
@@ -308,7 +376,9 @@ def _analyze_luna(lines: list[str]) -> list[LogFinding]:
 
 def analyze_log(content: str, profile_key: str | None = None) -> LogAnalysis:
     lines = content.splitlines()
-    sn_match = re.search(r"\bsn:([A-Za-z0-9_]+)", content)
+    sn_match = re.search(
+        r"\bsn\s*:\s*([A-Za-z0-9_]+)", content, flags=re.IGNORECASE,
+    )
     sn = sn_match.group(1) if sn_match else "未知"
     detected_profile_key, detected_product_name = _product_from_sn(sn)
     effective_profile_key = profile_key or detected_profile_key
@@ -339,8 +409,10 @@ def analyze_log(content: str, profile_key: str | None = None) -> LogAnalysis:
         if "name:motor_version" in line:
             motor_version_lines.append(line)
 
-        if "ability_running" in line and "msg:" in line:
-            match = re.search(r"msg:([^ ]*)", line)
+        if "ability_running" in line and re.search(r"\b(?:msg|message)\s*:", line):
+            match = re.search(
+                r"\b(?:msg|message)\s*:\s*([A-Za-z0-9_,/-]*)", line,
+            )
             if match:
                 state = CONTROLLER_STATE_MAP.get(match.group(1).strip(), match.group(1).strip())
                 if state != current_controller:

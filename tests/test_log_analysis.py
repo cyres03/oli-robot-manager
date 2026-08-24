@@ -107,6 +107,55 @@ def test_explicit_profile_identifies_log_without_sn():
     assert analysis.sn == "未知"
 
 
+def test_sn_and_controller_fields_accept_format_variants():
+    analysis = analyze_log(
+        "2026-01-01 00:00:00.000 I/x: SN: HU_D04_01_002\n"
+        "2026-01-01 00:00:01.000 I/x: name:ability_running message: Walk\n"
+        "2026-01-01 00:00:02.000 I/x: name:ability_running msg: Damping"
+    )
+
+    assert analysis.profile_key == "oli"
+    assert analysis.sn == "HU_D04_01_002"
+    assert analysis.current_controller == "阻尼"
+    assert analysis.controller_switch_count == 2
+
+
+def test_f10d_without_topology_evidence_is_not_called_topology_failure():
+    analysis = analyze_log(
+        "2026-01-01 00:00:00.000 I/x: sn:HU_D04_01_003\n"
+        "2026-01-01 00:00:01.000 I/x: Limx EtherCAT Master V1.0.0\n"
+        "2026-01-01 00:00:02.000 E/x: 进程退出, 因为错误代码是 0xf10d"
+    )
+
+    assert not any(
+        item.code == "OLI_ETHERCAT_TOPOLOGY_RESTART_LOOP"
+        for item in analysis.findings
+    )
+    finding = _finding(analysis, "OLI_ETHERCAT_MASTER_EXIT_LOOP")
+    assert "没有足够拓扑证据" in finding.detail
+
+
+def test_luna_power_windows_do_not_cross_aggregate():
+    analysis = analyze_log(
+        "2026-01-01 00:00:00.000 I/x: sn:HU_L04_01_004\n"
+        "2026-01-01 00:00:01.000 I/x: motor power turn off\n"
+        "2026-01-01 00:00:02.000 W/x: [ethercat] state = 2, motor 1 offline\n"
+        "2026-01-01 00:00:03.000 I/x: motor power turn on\n"
+        "2026-01-01 00:00:04.000 I/x: [ethercat] motor 1 enabled\n"
+        "2026-01-01 00:01:01.000 I/x: motor power turn off\n"
+        "2026-01-01 00:01:02.000 W/x: [ethercat] state = 2, motor 2 offline\n"
+        "2026-01-01 00:01:03.000 I/x: motor power turn on\n"
+        "2026-01-01 00:01:04.000 I/x: [ethercat] motor 3 enabled"
+    )
+
+    assert len(analysis.findings) == 2
+    assert analysis.findings[0].code == "LUNA_MOTOR_POWER_CYCLE"
+    assert analysis.findings[0].resolved is True
+    assert analysis.findings[1].code == "LUNA_MOTOR_POWER_INTERRUPTION"
+    assert analysis.findings[1].resolved is False
+    assert "缺少 enabled 证据的电机: 2" in analysis.findings[1].detail
+
+
 def test_log_panel_renders_profile_findings(qtbot):
     panel = LogAnalyzerPanel()
     qtbot.addWidget(panel)
@@ -116,3 +165,20 @@ def test_log_panel_renders_profile_findings(qtbot):
     assert "Oli · HU_D04_01_048" in panel.file_label.text()
     assert panel.summary_labels["faults"].text() == "1 错误 / 0 告警 / 0 次切换"
     assert any("EtherCAT 拓扑识别失败" in event.title for event in panel._events)
+
+
+def test_log_panel_preserves_power_timeline_and_search(qtbot):
+    panel = LogAnalyzerPanel()
+    qtbot.addWidget(panel)
+    content = (
+        "2026-01-01 00:00:00.000 I/x: sn:HU_D04_01_005\n"
+        "2026-01-01 00:00:01.000 I/x: recv power mtv state : off\n"
+        "2026-01-01 00:00:02.000 I/x: recv power mtv state : on"
+    )
+
+    panel.analyze_text(content, "power.log")
+    panel._perform_search("power mtv")
+
+    assert [event.title for event in panel._events] == ["驱动器下电", "驱动器上电"]
+    assert panel.search_info.text() == "1/2"
+    assert panel.timeline.topLevelItemCount() == 2

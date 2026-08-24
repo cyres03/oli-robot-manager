@@ -41,6 +41,8 @@ python main.py
 首次运行：
 
 ```bash
+sudo apt update
+sudo apt install -y python3-venv libxcb-cursor0 libxcb-xinerama0 libxkbcommon-x11-0 network-manager openssh-client
 git clone https://github.com/cyres03/oli-robot-manager.git
 cd oli-robot-manager
 chmod +x scripts/linux_setup.sh scripts/linux_run.sh
