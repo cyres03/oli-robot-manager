@@ -148,3 +148,52 @@ def test_queued_request_freezes_target_before_switch(qapp, monkeypatch):
     worker._execute_pending(pending)
 
     assert calls == []
+
+
+def test_late_action_response_does_not_mutate_new_workspace(qapp, monkeypatch):
+    worker = McpWorker("ws://old", "HU_D04_01_001")
+    worker.update_target(
+        "HU_D04_01_001", frozenset({"execute_dance"}), "ws://old", "oli",
+    )
+    service = DanceService(worker)
+    service.switch_resource_context("oli", "HU_D04_01_001", "v1")
+    old_generation = worker.target_generation
+    increments = []
+    monkeypatch.setattr(
+        service, "_increment_count",
+        lambda name, category: increments.append((name, category)) or 1,
+    )
+    service._pending_name = "old-dance"
+    service._busy = True
+
+    worker.update_target(
+        "HU_L04_01_091", frozenset({"get_dances"}), "ws://new", "hu_l04_01",
+    )
+    service.switch_resource_context("hu_l04_01", "HU_L04_01_091", "v2")
+    service._on_tool_result("execute_dance", {
+        "success": True,
+        "content": ["{}"],
+        "_target_context": {
+            "generation": old_generation,
+            "accid": "HU_D04_01_001",
+            "profile_key": "oli",
+            "request_context": None,
+        },
+    })
+
+    assert increments == []
+    assert service._busy is False
+
+
+def test_connection_workspace_rejects_robot_page_navigation(qtbot, monkeypatch):
+    from ui.main_window import MainWindow
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    navigated = []
+    monkeypatch.setattr(window, "_switch_page", navigated.append)
+    window.stack = True
+
+    window._on_navigate("controls")
+
+    assert navigated == []

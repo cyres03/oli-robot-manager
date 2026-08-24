@@ -311,12 +311,16 @@ class AcceptanceTestPanel(QWidget):
         self._workers: list[QThread] = []
         self._pending: list[int] = []
         self._running_index: int | None = None
+        self._profile_generation = 0
         self._ssh_retry: tuple[int, AcceptanceCheck, str] | None = None
         self._pending_time_fix: tuple[int, AcceptanceCheck, str, str] | None = None
         self._build_ui()
         self._populate_checks()
 
     def apply_profile(self, profile: RobotProfile | None):
+        self._profile_generation += 1
+        self._ssh_retry = None
+        self._pending_time_fix = None
         self._profile = profile or OLI_PROFILE
         self.CHECKS = build_acceptance_checks(self._profile)
         self._pending.clear()
@@ -458,9 +462,18 @@ class AcceptanceTestPanel(QWidget):
 
     def refresh_robot_versions(self):
         self._append_detail("正在从 8080 manager 读取版本信息...")
+        generation = self._profile_generation
         worker = RobotInfoWorker(ROBOT_CONFIG.portal_url, self)
-        worker.finished.connect(self._on_robot_info_loaded)
-        worker.failed.connect(lambda error: self._append_detail(f"读取 8080 版本失败: {error}"))
+        worker.finished.connect(
+            lambda info, current=generation:
+            self._run_if_current(current, self._on_robot_info_loaded, info)
+        )
+        worker.failed.connect(
+            lambda error, current=generation:
+            self._run_if_current(
+                current, self._append_detail, f"读取 8080 版本失败: {error}"
+            )
+        )
         self._workers.append(worker)
         worker.start()
 
@@ -501,9 +514,18 @@ class AcceptanceTestPanel(QWidget):
 
     def refresh_log_list(self):
         self.log_status.setText("正在读取 8090 日志列表...")
+        generation = self._profile_generation
         worker = LogListWorker(ROBOT_CONFIG.logs_url, self)
-        worker.finished.connect(self._on_log_list_loaded)
-        worker.failed.connect(lambda error: self.log_status.setText(f"读取失败: {error}"))
+        worker.finished.connect(
+            lambda names, current=generation:
+            self._run_if_current(current, self._on_log_list_loaded, names)
+        )
+        worker.failed.connect(
+            lambda error, current=generation:
+            self._run_if_current(
+                current, self.log_status.setText, f"读取失败: {error}"
+            )
+        )
         self._workers.append(worker)
         worker.start()
 
@@ -522,9 +544,20 @@ class AcceptanceTestPanel(QWidget):
             self.log_status.setText("请先刷新并选择日志")
             return
         self.log_status.setText(f"正在下载 {log_name}...")
+        generation = self._profile_generation
         worker = LogDownloadWorker(ROBOT_CONFIG.logs_url, log_name, self)
-        worker.finished.connect(self._on_log_downloaded)
-        worker.failed.connect(lambda error: self.log_status.setText(f"下载失败: {error}"))
+        worker.finished.connect(
+            lambda name, path, content, current=generation:
+            self._run_if_current(
+                current, self._on_log_downloaded, name, path, content
+            )
+        )
+        worker.failed.connect(
+            lambda error, current=generation:
+            self._run_if_current(
+                current, self.log_status.setText, f"下载失败: {error}"
+            )
+        )
         self._workers.append(worker)
         worker.start()
 
@@ -576,9 +609,21 @@ class AcceptanceTestPanel(QWidget):
         self._finish_check(row_index, False, "未知本地检查", "")
 
     def _run_http_check(self, row_index: int, check: AcceptanceCheck):
+        generation = self._profile_generation
         worker = HttpCheckWorker(check.url, self)
-        worker.finished.connect(lambda status_code, body, current_row=row_index, current_check=check: self._on_http_done(current_row, current_check, status_code, body))
-        worker.failed.connect(lambda error, current_row=row_index: self._finish_check(current_row, False, error, error))
+        worker.finished.connect(
+            lambda status_code, body, current_row=row_index, current_check=check, current=generation:
+            self._run_if_current(
+                current, self._on_http_done,
+                current_row, current_check, status_code, body,
+            )
+        )
+        worker.failed.connect(
+            lambda error, current_row=row_index, current=generation:
+            self._run_if_current(
+                current, self._finish_check, current_row, False, error, error,
+            )
+        )
         self._workers.append(worker)
         worker.start()
 
@@ -596,16 +641,27 @@ class AcceptanceTestPanel(QWidget):
         check: AcceptanceCheck,
         robot_id: str = "",
     ):
+        generation = self._profile_generation
         worker = self._create_ssh_worker(check.target, robot_id)
         worker.set_command(check.command)
-        worker.command_finished.connect(lambda exit_code, current_row=row_index, current_check=check, current_worker=worker: self._on_ssh_done(current_row, current_check, exit_code, current_worker.collected_output))
-        worker.authentication_required.connect(
-            lambda host, username, robot_id, current_row=row_index, current_check=check:
-            self._on_ssh_authentication_required(
-                current_row, current_check, host, username, robot_id
+        worker.command_finished.connect(
+            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker, current=generation:
+            self._run_if_current(
+                current, self._on_ssh_done,
+                current_row, current_check, exit_code, current_worker.collected_output,
             )
         )
-        worker.error_occurred.connect(lambda error, current_row=row_index: self._on_ssh_error(current_row, error))
+        worker.authentication_required.connect(
+            lambda host, username, robot_id, current_row=row_index, current_check=check, current=generation:
+            self._run_if_current(
+                current, self._on_ssh_authentication_required,
+                current_row, current_check, host, username, robot_id,
+            )
+        )
+        worker.error_occurred.connect(
+            lambda error, current_row=row_index, current=generation:
+            self._run_if_current(current, self._on_ssh_error, current_row, error)
+        )
         self._workers.append(worker)
         worker.start()
 
@@ -677,23 +733,33 @@ class AcceptanceTestPanel(QWidget):
         output: str,
         verification: bool,
     ):
+        generation = self._profile_generation
         self._set_row(row_index, "执行中", "正在获取可信网络北京时间...", "")
         worker = BeijingTimeWorker(self)
         if verification:
             worker.time_ready.connect(
-                lambda reference, current_row=row_index, current_check=check, current_output=output:
-                self._on_time_verified(current_row, current_check, current_output, reference)
+                lambda reference, current_row=row_index, current_check=check, current_output=output, current=generation:
+                self._run_if_current(
+                    current, self._on_time_verified,
+                    current_row, current_check, current_output, reference,
+                )
             )
             failure_summary = "无法获取可信网络北京时间，校时结果无法复验"
         else:
             worker.time_ready.connect(
-                lambda reference, current_row=row_index, current_check=check, current_output=output:
-                self._on_time_checked(current_row, current_check, current_output, reference)
+                lambda reference, current_row=row_index, current_check=check, current_output=output, current=generation:
+                self._run_if_current(
+                    current, self._on_time_checked,
+                    current_row, current_check, current_output, reference,
+                )
             )
             failure_summary = "无法获取可信网络北京时间，未执行自动校时"
         worker.failed.connect(
-            lambda error, current_row=row_index, summary=failure_summary:
-            self._finish_check(current_row, False, summary, error)
+            lambda error, current_row=row_index, summary=failure_summary, current=generation:
+            self._run_if_current(
+                current, self._finish_check,
+                current_row, False, summary, error,
+            )
         )
         self._workers.append(worker)
         worker.start()
@@ -793,6 +859,7 @@ class AcceptanceTestPanel(QWidget):
         remember: bool = False,
         from_store: bool = False,
     ):
+        generation = self._profile_generation
         fix_commands = (
             "timedatectl set-timezone Asia/Shanghai && "
             f'date -s "{beijing_time_text}" && '
@@ -821,20 +888,21 @@ class AcceptanceTestPanel(QWidget):
             )
         sudo_password = ""
         worker.command_finished.connect(
-            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker:
-            self._on_time_fixed(
-                current_row,
-                current_check,
-                exit_code,
-                current_worker.collected_output,
-                robot_id,
-                beijing_time_text,
-                current_worker,
+            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker, current=generation:
+            self._run_if_current(
+                current,
+                self._on_time_fixed,
+                current_row, current_check, exit_code,
+                current_worker.collected_output, robot_id,
+                beijing_time_text, current_worker,
             )
         )
         worker.error_occurred.connect(
-            lambda error, current_row=row_index:
-            self._finish_check(current_row, False, f"自动校时 SSH 失败: {error}", error)
+            lambda error, current_row=row_index, current=generation:
+            self._run_if_current(
+                current, self._finish_check,
+                current_row, False, f"自动校时 SSH 失败: {error}", error,
+            )
         )
         self._workers.append(worker)
         worker.start()
@@ -886,18 +954,20 @@ class AcceptanceTestPanel(QWidget):
         self._append_detail(f"[自动校时] {check.name}\n{output.strip()}\n")
         worker = self._create_ssh_worker(check.target, robot_id)
         worker.set_command(TIME_CHECK_COMMAND)
+        generation = self._profile_generation
         worker.command_finished.connect(
-            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker:
-            self._request_beijing_time(
-                current_row,
-                current_check,
-                current_worker.collected_output,
-                verification=True,
+            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker, current=generation:
+            self._run_if_current(
+                current, self._request_beijing_time,
+                current_row, current_check, current_worker.collected_output, True,
             )
         )
         worker.error_occurred.connect(
-            lambda error, current_row=row_index:
-            self._finish_check(current_row, False, f"校时复验 SSH 失败: {error}", error)
+            lambda error, current_row=row_index, current=generation:
+            self._run_if_current(
+                current, self._finish_check,
+                current_row, False, f"校时复验 SSH 失败: {error}", error,
+            )
         )
         self._workers.append(worker)
         worker.start()
@@ -1006,3 +1076,8 @@ class AcceptanceTestPanel(QWidget):
         self.summary_label.setText(
             f"完成：PASS {passed} / FAIL {failed} / N/A {not_applicable}"
         )
+
+    def _run_if_current(self, generation: int, callback, *args):
+        if generation == self._profile_generation:
+            return callback(*args)
+        return None

@@ -20,7 +20,7 @@ from workers.mcp_worker import McpWorker
 from workers.ssh_key_install_worker import SshKeyInstallWorker
 from workers.ssh_worker import SshWorker
 from models.robot_profile import RobotIdentity, RobotIdentityStatus
-from models.workspace import resolve_workspace
+from models.workspace import CONNECTION_WORKSPACE, resolve_workspace
 from ui.widgets.sidebar import Sidebar
 from ui.widgets.status_bar_widget import StatusBarWidget
 from ui.widgets.status_banner import StatusBanner
@@ -60,6 +60,7 @@ class MainWindow(QMainWindow):
         self._last_status_log_at = 0.0
         self._last_identity_status_key: tuple[str, str] | None = None
         self._active_workspace_key = "connection"
+        self._active_workspace = CONNECTION_WORKSPACE
         self._was_minimized = False
         self._ui_log_path = os.path.join(
             os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
@@ -266,6 +267,7 @@ class MainWindow(QMainWindow):
             )
         self.sidebar.apply_profile(profile)
         self.sidebar.apply_workspace(workspace)
+        self._active_workspace = workspace
         if workspace.key != self._active_workspace_key:
             self._active_workspace_key = workspace.key
             self._on_navigate(workspace.default_route)
@@ -373,6 +375,13 @@ class MainWindow(QMainWindow):
 
         if key == "wifi_selector":
             self._show_wifi_selector()
+            return
+
+        if self._active_workspace.route(key) is None:
+            self.terminal.append_log(
+                f"[工作区] 当前 {self._active_workspace.display_name} 不允许打开 {key}",
+                "warn",
+            )
             return
 
         index_map = {

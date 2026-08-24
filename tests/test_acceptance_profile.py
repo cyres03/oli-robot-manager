@@ -1,6 +1,8 @@
 import time
 from datetime import datetime
 
+from PyQt6.QtCore import QObject, pyqtSignal
+
 from config import ROBOT_CONFIG
 from models.robot_profile import L04_PROFILE, OLI_PROFILE
 from ui.panels.acceptance_test_panel import (
@@ -88,4 +90,72 @@ def test_l04_time_failure_does_not_run_remote_fix(qtbot, monkeypatch):
     assert finished
     assert finished[0][1] is False
     assert "仅检查，不自动校时" in finished[0][2]
+    assert fixes == []
+
+
+def test_profile_switch_rejects_late_acceptance_callback(qtbot):
+    panel = AcceptanceTestPanel(profile=OLI_PROFILE)
+    qtbot.addWidget(panel)
+    old_generation = panel._profile_generation
+
+    panel.apply_profile(L04_PROFILE)
+    panel._run_if_current(
+        old_generation,
+        panel._on_robot_info_loaded,
+        {"software_version": "stale-oli"},
+    )
+
+    assert panel.version_labels["software_version"].text() == "-"
+
+
+def test_profile_switch_rejects_late_beijing_time_callback(qtbot, monkeypatch):
+    import ui.panels.acceptance_test_panel as acceptance_module
+
+    workers = []
+
+    class FakeBeijingTimeWorker(QObject):
+        time_ready = pyqtSignal(object)
+        failed = pyqtSignal(str)
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            workers.append(self)
+
+        def start(self):
+            pass
+
+    panel = AcceptanceTestPanel(profile=OLI_PROFILE)
+    qtbot.addWidget(panel)
+    calls = []
+    monkeypatch.setattr(acceptance_module, "BeijingTimeWorker", FakeBeijingTimeWorker)
+    monkeypatch.setattr(panel, "_on_time_checked", lambda *args: calls.append(args))
+    check = _check(panel.CHECKS, "main_time")
+
+    panel._request_beijing_time(0, check, "old-output", verification=False)
+    panel.apply_profile(L04_PROFILE)
+    workers[0].time_ready.emit((datetime.now(BEIJING_TIMEZONE), time.monotonic()))
+
+    assert calls == []
+
+
+def test_profile_switch_clears_old_authorization_and_sudo_state(qtbot, monkeypatch):
+    panel = AcceptanceTestPanel(profile=OLI_PROFILE)
+    qtbot.addWidget(panel)
+    check = _check(panel.CHECKS, "companion_time")
+    panel._ssh_retry = (0, check, "HU_D04_01_001")
+    panel._pending_time_fix = (
+        0, check, "2026-01-01 00:00:00", "HU_D04_01_001",
+    )
+    finishes = []
+    fixes = []
+    monkeypatch.setattr(panel, "_finish_check", lambda *args: finishes.append(args))
+    monkeypatch.setattr(panel, "_run_time_fix", lambda *args, **kwargs: fixes.append((args, kwargs)))
+
+    panel.apply_profile(L04_PROFILE)
+    panel.finish_ssh_authorization(True, "")
+    panel.submit_sudo_password("old-password")
+
+    assert panel._ssh_retry is None
+    assert panel._pending_time_fix is None
+    assert finishes == []
     assert fixes == []

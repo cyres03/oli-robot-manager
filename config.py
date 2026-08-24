@@ -187,6 +187,14 @@ class RobotConfig:
         self.profile_key = ""
         self.model_name = "未识别"
         self.ws_accid = ""
+        self.main_control_ip = ""
+        self.main_control_user = ""
+        self.perception_ip = ""
+        self.perception_user = ""
+        self.portal_url = ""
+        self.logs_url = ""
+        self.websocket_url = ""
+        self.mcp_url = ""
         self.mcp_supported = False
         self.expected_motor_count = None
         self.allow_cpu_repair = False

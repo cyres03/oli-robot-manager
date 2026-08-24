@@ -300,6 +300,9 @@ class DanceService(QObject):
 
     def _on_tool_result(self, tool_name: str, result):
         target_context = result.get("_target_context", {}) if isinstance(result, dict) else {}
+        if tool_name in {"execute_dance", "execute_motion", "set_motion_engine"}:
+            if not self._matches_current_target(target_context):
+                return
         response_context = ResourceContext.from_dict(
             target_context.get("request_context") if isinstance(target_context, dict) else None
         )
@@ -384,6 +387,15 @@ class DanceService(QObject):
         elif tool_name == "set_motion_engine" and result.get("success"):
             if self._motion_engine_request is not None:
                 self.motion_engine_changed.emit(self._motion_engine_request == 1)
+
+    def _matches_current_target(self, target_context: object) -> bool:
+        if not isinstance(target_context, dict) or not self._resource_context:
+            return False
+        return (
+            target_context.get("generation") == self._mcp.target_generation
+            and target_context.get("accid") == self._resource_context.accid
+            and target_context.get("profile_key") == self._resource_context.profile_key
+        )
 
     def _advance_sequence_after_action(self):
         if self._active_sequence is None:
