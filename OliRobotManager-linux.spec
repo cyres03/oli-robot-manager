@@ -10,6 +10,9 @@ a = Analysis(
         ('resources/logo/oli_manager_logo.ico', 'resources/logo'),
         ('resources/logo/oli_manager_logo.svg', 'resources/logo'),
         ('resources/backlash/backlash_install.zip', 'resources/backlash'),
+        ('resources/test_cases/cases.json', 'resources/test_cases'),
+        ('resources/test_cases/scripts/snapshot.py', 'resources/test_cases/scripts'),
+        ('resources/test_cases/scripts/mros_node_health.sh', 'resources/test_cases/scripts'),
     ],
     hiddenimports=[
         'websockets',

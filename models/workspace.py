@@ -54,6 +54,7 @@ LUNA_WORKSPACE = WorkspaceDefinition(
     routes=(
         WorkspaceRoute("dance_library", "Luna 资源库"),
         WorkspaceRoute("controls", "状态与查询"),
+        WorkspaceRoute("test_cases", "测试用例"),
         WorkspaceRoute("acceptance", "Luna 验收"),
         WorkspaceRoute("log_analysis", "日志诊断"),
         WorkspaceRoute("health_check", "节点健康"),

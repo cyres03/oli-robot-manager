@@ -174,6 +174,7 @@ class Sidebar(QFrame):
     ITEMS = [
         ("dance_library", "舞蹈&动作库"),
         ("controls", "基础控制"),
+        ("test_cases", "测试用例"),
         ("acceptance", "验收测试"),
         ("health_check", "健康检查"),
         ("calibrate", "校零"),

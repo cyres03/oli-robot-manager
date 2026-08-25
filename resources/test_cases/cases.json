@@ -1,0 +1,36 @@
+{
+  "cases": [
+    {
+      "id": "luna-mros-node-health",
+      "name": "Luna mROS 节点健康",
+      "product_key": "hu_l04_01",
+      "target_role": "main",
+      "source": "bundled_script",
+      "category": "节点健康",
+      "timeout_seconds": 15,
+      "cleanup": true,
+      "requires_pty": true,
+      "firmware_pattern": "^robot-luna-r-1\\.2\\.",
+      "script_path": "scripts/mros_node_health.sh",
+      "interpreter": "sh",
+      "arguments": ["."],
+      "risks": ["temporary_write"],
+      "expected_exit_codes": [0],
+      "expected_stdout_pattern": ".+"
+    },
+    {
+      "id": "luna-speech-vision-snapshot",
+      "name": "Luna 语音/视觉运行检查",
+      "product_key": "hu_l04_01",
+      "target_role": "speech_vision",
+      "source": "remote_command",
+      "category": "伴随节点",
+      "timeout_seconds": 20,
+      "cleanup": true,
+      "firmware_pattern": "^robot-luna-r-1\\.2\\.",
+      "command": "printf 'node='; hostname; printf 'cores='; nproc; printf 'services='; ps -eo comm= | grep -E 'AudioDeviceNode|speech_playback|GestureMrosNode|mroswebvideo' | sort -u | paste -sd, - || true",
+      "expected_exit_codes": [0],
+      "expected_stdout_pattern": "node=.*cores=[0-9]+"
+    }
+  ]
+}

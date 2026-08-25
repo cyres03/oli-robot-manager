@@ -1,9 +1,13 @@
 """Paramiko-based SSH client with key authentication and password fallback."""
 import os
 import re
+import shlex
 import threading
+import time
+import uuid
 import paramiko
 from dataclasses import dataclass
+from typing import Callable
 
 
 DEFAULT_SSH_KEY_PATH = os.path.join(
@@ -20,6 +24,14 @@ class SshAuthenticationError(ConnectionError):
 
 
 class SshRobotMismatchError(ConnectionError):
+    pass
+
+
+class SshExecutionCancelled(RuntimeError):
+    pass
+
+
+class SshOutputLimitError(RuntimeError):
     pass
 
 
@@ -113,7 +125,12 @@ class SshClient:
             client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         return client
 
-    def connect(self, timeout: int = 10) -> bool:
+    def connect(
+        self,
+        timeout: int = 10,
+        cancel_event: threading.Event | None = None,
+    ) -> bool:
+        self._raise_if_cancelled(cancel_event)
         if self.robot_id:
             connected_robot_id = current_robot_id()
             if connected_robot_id != self.robot_id:
@@ -125,53 +142,78 @@ class SshClient:
         last_error = None
         authentication_failed = False
         if os.path.isfile(self._key_path):
-            self._client = self._create_client()
+            self._raise_if_cancelled(cancel_event)
+            client = self._create_client()
+            self._client = client
             try:
-                self._client.connect(
+                client.connect(
                     self.host,
                     username=self.username,
                     key_filename=self._key_path,
                     timeout=timeout,
+                    banner_timeout=timeout,
+                    auth_timeout=timeout,
                     look_for_keys=False,
                     allow_agent=False,
                 )
+                self._raise_if_cancelled(cancel_event)
                 self._verify_robot_identity()
+                self._raise_if_cancelled(cancel_event)
                 return True
-            except SshRobotMismatchError:
-                self._client.close()
+            except (SshRobotMismatchError, SshExecutionCancelled):
+                client.close()
+                if self._client is client:
+                    self._client = None
                 raise
             except Exception as e:
                 last_error = e
                 authentication_failed = self._is_authentication_error(e)
-                self._client.close()
+                client.close()
+                if self._client is client:
+                    self._client = None
+                self._raise_if_cancelled(cancel_event)
 
         for pw in self._passwords:
-            self._client = self._create_client()
+            self._raise_if_cancelled(cancel_event)
+            client = self._create_client()
+            self._client = client
             try:
-                self._client.connect(
+                client.connect(
                     self.host,
                     username=self.username,
                     password=pw or None,
                     timeout=timeout,
+                    banner_timeout=timeout,
+                    auth_timeout=timeout,
                     look_for_keys=False,
                     allow_agent=False,
                 )
+                self._raise_if_cancelled(cancel_event)
                 self._verify_robot_identity()
+                self._raise_if_cancelled(cancel_event)
                 self._used_password = pw
                 return True
-            except SshRobotMismatchError:
-                self._client.close()
+            except (SshRobotMismatchError, SshExecutionCancelled):
+                client.close()
+                if self._client is client:
+                    self._client = None
                 raise
             except paramiko.AuthenticationException as e:
                 last_error = e
                 authentication_failed = True
-                self._client.close()
+                client.close()
+                if self._client is client:
+                    self._client = None
+                self._raise_if_cancelled(cancel_event)
                 # Password wrong, try next
                 continue
             except Exception as e:
                 last_error = e
                 authentication_failed = authentication_failed or self._is_authentication_error(e)
-                self._client.close()
+                client.close()
+                if self._client is client:
+                    self._client = None
+                self._raise_if_cancelled(cancel_event)
                 # Connection error, try next password anyway
                 continue
 
@@ -182,6 +224,11 @@ class SshClient:
             f"SSH {self.username}@{self.host} failed "
             f"(tried {key_attempt} and {len(self._passwords)} passwords): {last_error}"
         )
+
+    @staticmethod
+    def _raise_if_cancelled(cancel_event: threading.Event | None):
+        if cancel_event and cancel_event.is_set():
+            raise SshExecutionCancelled("SSH 连接已取消")
 
     @staticmethod
     def _is_authentication_error(error: Exception) -> bool:
@@ -224,7 +271,162 @@ class SshClient:
             on_line("[stderr] " + line.rstrip("\n"))
         return stdout.channel.recv_exit_status()
 
+    def execute_managed(
+        self,
+        command: str,
+        on_line: Callable[[str, str], None],
+        cancel_event: threading.Event,
+        timeout: float,
+        max_output_bytes: int = 1024 * 1024,
+        allocate_pty: bool = False,
+    ) -> SshResult:
+        if not self._client:
+            raise RuntimeError("Not connected. Call connect() first.")
+
+        marker = "__OLI_TEST_PID__="
+        pid_file = f"/tmp/.oli-robot-manager-{uuid.uuid4().hex}.pid"
+        process_group_guard = (
+            'pgid=$(ps -o pgid= -p "$$" | tr -d " "); '
+            'if [ "$pgid" != "$$" ]; then '
+            'printf "%s\\n" "无法隔离 PTY 测试进程组" >&2; exit 125; fi; '
+            if allocate_pty else ""
+        )
+        launch_script = (
+            "pid_file=$1; "
+            'tmp_file="${pid_file}.tmp.$$"; '
+            "umask 077; "
+            'printf "%s\\n" "$$" > "$tmp_file"; '
+            'mv -f -- "$tmp_file" "$pid_file"; '
+            'trap \'rm -f -- "$pid_file" "$tmp_file"\' EXIT; '
+            f'printf "{marker}%s\\n" "$$"; '
+            f"{process_group_guard}"
+            f"{command}"
+        )
+        launcher = "sh -c" if allocate_pty else "setsid sh -c"
+        wrapped = " ".join([
+            launcher,
+            shlex.quote(launch_script),
+            "oli-managed-test",
+            shlex.quote(pid_file),
+        ])
+        _, stdout, stderr = self._client.exec_command(
+            wrapped,
+            get_pty=allocate_pty,
+        )
+        channel = stdout.channel
+        started_at = time.monotonic()
+        remote_pid = None
+        total_bytes = 0
+        collected = {"stdout": [], "stderr": []}
+        pending = {"stdout": "", "stderr": ""}
+
+        def consume(chunk: bytes, stream: str):
+            nonlocal remote_pid, total_bytes
+            decoded = chunk.decode("utf-8", errors="replace")
+            if stream == "stdout" and remote_pid is None:
+                pid_match = re.search(
+                    rf"(?:^|\n){re.escape(marker)}(\d+)(?:\r?\n|$)",
+                    pending[stream] + decoded,
+                )
+                if pid_match:
+                    remote_pid = int(pid_match.group(1))
+            total_bytes += len(chunk)
+            if total_bytes > max_output_bytes:
+                terminated = self._terminate_process_group(remote_pid, pid_file)
+                channel.close()
+                outcome = "已终止远端进程" if terminated else "无法确认远端进程已终止"
+                raise SshOutputLimitError(
+                    f"测试输出超过 {max_output_bytes} 字节，{outcome}"
+                )
+            text = pending[stream] + decoded
+            lines = text.splitlines(keepends=True)
+            pending[stream] = ""
+            if lines and not lines[-1].endswith(("\n", "\r")):
+                pending[stream] = lines.pop()
+            for raw_line in lines:
+                line = raw_line.rstrip("\r\n")
+                if stream == "stdout" and line.startswith(marker):
+                    pid_text = line[len(marker):].strip()
+                    remote_pid = int(pid_text) if pid_text.isdigit() else None
+                    continue
+                collected[stream].append(line)
+                on_line(line, stream)
+
+        try:
+            while True:
+                if channel.recv_ready():
+                    consume(channel.recv(8192), "stdout")
+                if channel.recv_stderr_ready():
+                    consume(channel.recv_stderr(8192), "stderr")
+                if channel.exit_status_ready():
+                    if not channel.recv_ready() and not channel.recv_stderr_ready():
+                        break
+                    continue
+                if cancel_event.is_set():
+                    terminated = self._terminate_process_group(remote_pid, pid_file)
+                    channel.close()
+                    outcome = "远端进程已终止" if terminated else "无法确认远端进程已终止"
+                    raise SshExecutionCancelled(f"测试已取消，{outcome}")
+                if time.monotonic() - started_at > timeout:
+                    terminated = self._terminate_process_group(remote_pid, pid_file)
+                    channel.close()
+                    outcome = "远端进程已终止" if terminated else "无法确认远端进程已终止"
+                    raise TimeoutError(f"测试超过 {timeout:.0f} 秒，{outcome}")
+                time.sleep(0.05)
+
+            for stream in ("stdout", "stderr"):
+                if pending[stream]:
+                    line = pending[stream]
+                    if stream == "stdout" and line.startswith(marker):
+                        pid_text = line[len(marker):].strip()
+                        remote_pid = int(pid_text) if pid_text.isdigit() else remote_pid
+                    else:
+                        collected[stream].append(line)
+                        on_line(line, stream)
+            exit_code = channel.recv_exit_status()
+            return SshResult(
+                exit_code=exit_code,
+                stdout="\n".join(collected["stdout"]),
+                stderr="\n".join(collected["stderr"]),
+            )
+        finally:
+            channel.close()
+
+    def _terminate_process_group(
+        self,
+        remote_pid: int | None,
+        pid_file: str,
+    ) -> bool:
+        if not self._client:
+            return False
+        initial_pid = str(remote_pid) if remote_pid is not None else ""
+        command = (
+            f"pid={shlex.quote(initial_pid)}; "
+            f"pid_file={shlex.quote(pid_file)}; "
+            'attempt=0; while [ -z "$pid" ] && [ "$attempt" -lt 10 ]; do '
+            '[ -s "$pid_file" ] && pid=$(cat -- "$pid_file" 2>/dev/null); '
+            'attempt=$((attempt + 1)); [ -n "$pid" ] || sleep 0.05; done; '
+            'case "$pid" in ""|*[!0-9]*) rm -f -- "$pid_file"; exit 3;; esac; '
+            'kill -TERM "-$pid" 2>/dev/null || true; '
+            'attempt=0; while kill -0 "-$pid" 2>/dev/null '
+            '&& [ "$attempt" -lt 10 ]; do '
+            'sleep 0.1; attempt=$((attempt + 1)); done; '
+            'if kill -0 "-$pid" 2>/dev/null; then '
+            'kill -KILL "-$pid" 2>/dev/null || true; fi; '
+            'attempt=0; while kill -0 "-$pid" 2>/dev/null '
+            '&& [ "$attempt" -lt 10 ]; do '
+            'sleep 0.1; attempt=$((attempt + 1)); done; '
+            'rm -f -- "$pid_file"; '
+            '! kill -0 "-$pid" 2>/dev/null'
+        )
+        try:
+            _, stdout, _ = self._client.exec_command(command, timeout=5)
+            return stdout.channel.recv_exit_status() == 0
+        except Exception:
+            return False
+
     def close(self):
-        if self._client:
-            self._client.close()
-            self._client = None
+        client = self._client
+        self._client = None
+        if client:
+            client.close()
