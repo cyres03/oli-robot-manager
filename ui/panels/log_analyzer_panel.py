@@ -39,9 +39,11 @@ class LogAnalyzerPanel(QWidget):
             "QPushButton { background: #FFFFFF; color: #1D2129; border: 1px solid #E5E6EB; border-radius: 6px; padding: 8px 14px; }"
             "QPushButton:hover { background: #F2F3F5; border-color: #C9CDD4; }"
             "QLineEdit { background: #FFFFFF; border: 1px solid #E5E6EB; border-radius: 6px; padding: 8px 10px; }"
-            "QPlainTextEdit, QTreeWidget { background: #111827; color: #E5E7EB; border: 1px solid #374151; border-radius: 8px; font-family: Consolas, 'Courier New', monospace; font-size: 14px; }"
-            "QTreeWidget::item { padding: 4px 6px; }"
-            "QHeaderView::section { background: #1F2937; color: #E5E7EB; border: none; padding: 7px 8px; font-weight: 700; }"
+            "QPlainTextEdit#logContent { background: #111827; color: #E5E7EB; border: 1px solid #374151; border-radius: 8px; font-family: Consolas, 'Courier New', monospace; font-size: 14px; }"
+            "QTreeWidget#eventTimeline { background: #FFFFFF; alternate-background-color: #F6F9FF; color: #263550; border: 1px solid #D7E3F4; border-radius: 8px; font-size: 13px; outline: none; }"
+            "QTreeWidget#eventTimeline::item { color: #263550; padding: 6px 7px; border-bottom: 1px solid #EDF2FA; }"
+            "QTreeWidget#eventTimeline::item:selected { background: #E8F0FF; color: #1D2A44; }"
+            "QTreeWidget#eventTimeline QHeaderView::section { background: #EAF1FF; color: #34518D; border: none; border-right: 1px solid #D7E3F4; border-bottom: 1px solid #D7E3F4; padding: 7px 6px; font-weight: 700; }"
         )
         self.setObjectName("logAnalyzer")
 
@@ -103,27 +105,40 @@ class LogAnalyzerPanel(QWidget):
         search_bar.addWidget(self.search_info)
         layout.addLayout(search_bar)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.log_view = QPlainTextEdit()
+        self.log_view.setObjectName("logContent")
         self.log_view.setReadOnly(True)
         self.log_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
-        self.log_view.setMinimumWidth(560)
+        self.log_view.setMinimumWidth(440)
         self.log_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        splitter.addWidget(self.log_view)
+        self.splitter.addWidget(self.log_view)
 
         self.timeline = QTreeWidget()
-        self.timeline.setHeaderLabels(["行", "类型", "事件", "详情"])
+        self.timeline.setObjectName("eventTimeline")
+        self.timeline.setHeaderLabels(["行", "类型", "事件"])
         self.timeline.setRootIsDecorated(False)
         self.timeline.setAlternatingRowColors(True)
-        self.timeline.setMinimumWidth(330)
+        self.timeline.setUniformRowHeights(True)
+        self.timeline.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.timeline.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.timeline.setMinimumWidth(300)
         self.timeline.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.timeline.header().setStretchLastSection(True)
+        header = self.timeline.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.timeline.setColumnWidth(0, 58)
+        self.timeline.setColumnWidth(1, 72)
         self.timeline.itemClicked.connect(self._on_event_clicked)
-        splitter.addWidget(self.timeline)
-        splitter.setCollapsible(0, False)
-        splitter.setCollapsible(1, False)
-        splitter.setSizes([760, 360])
-        layout.addWidget(splitter, 1)
+        self.splitter.addWidget(self.timeline)
+        self.splitter.setCollapsible(0, False)
+        self.splitter.setCollapsible(1, False)
+        self.splitter.setStretchFactor(0, 2)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([680, 340])
+        layout.addWidget(self.splitter, 1)
 
     def _open_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "选择机器人日志", "", "日志文件 (*.log *.txt);;所有文件 (*.*)")
@@ -161,13 +176,19 @@ class LogAnalyzerPanel(QWidget):
     def _render_timeline(self):
         self.timeline.clear()
         for event in sorted(self._events, key=lambda item: item.line_number):
-            item = QTreeWidgetItem([str(event.line_number), event.category, event.title, event.detail])
+            event_text = event.title
+            if event.detail:
+                event_text = f"{event.title} · {event.detail}"
+            item = QTreeWidgetItem([
+                str(event.line_number),
+                event.category,
+                event_text,
+            ])
             item.setData(0, Qt.ItemDataRole.UserRole, event.line_number)
+            item.setTextAlignment(0, Qt.AlignmentFlag.AlignCenter)
+            item.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
+            item.setToolTip(2, event_text)
             self.timeline.addTopLevelItem(item)
-        self.timeline.setColumnWidth(0, 80)
-        self.timeline.setColumnWidth(1, 90)
-        self.timeline.setColumnWidth(2, 220)
-        self.timeline.header().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
 
     def _on_event_clicked(self, item: QTreeWidgetItem):
         line_number = int(item.data(0, Qt.ItemDataRole.UserRole) or 1)
