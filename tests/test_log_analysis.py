@@ -1,3 +1,6 @@
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QHeaderView
+
 from services.log_analysis import analyze_log
 from ui.panels.log_analyzer_panel import LogAnalyzerPanel
 
@@ -182,3 +185,28 @@ def test_log_panel_preserves_power_timeline_and_search(qtbot):
     assert [event.title for event in panel._events] == ["驱动器下电", "驱动器上电"]
     assert panel.search_info.text() == "1/2"
     assert panel.timeline.topLevelItemCount() == 2
+
+
+def test_log_panel_timeline_fits_narrow_pane_without_horizontal_scroll(qtbot):
+    panel = LogAnalyzerPanel()
+    qtbot.addWidget(panel)
+    panel.resize(1000, 620)
+    panel.show()
+    content = (
+        "2026-01-01 00:00:00.000 I/x: sn:HU_D04_01_005\n"
+        "2026-01-01 00:00:01.000 I/x: recv power mtv state : off\n"
+        "2026-01-01 00:00:02.000 I/x: recv power mtv state : on"
+    )
+
+    panel.analyze_text(content, "power.log")
+    qtbot.waitUntil(lambda: panel.timeline.viewport().width() > 0)
+
+    assert panel.timeline.columnCount() == 3
+    assert panel.timeline.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert panel.timeline.horizontalScrollBar().maximum() == 0
+    assert panel.timeline.header().sectionResizeMode(2) == QHeaderView.ResizeMode.Stretch
+    assert "#FFFFFF" in panel.styleSheet()
+    assert "alternate-background-color: #F6F9FF" in panel.styleSheet()
+    event_item = panel.timeline.topLevelItem(0)
+    assert "驱动器下电" in event_item.text(2)
+    assert event_item.toolTip(2) == event_item.text(2)
