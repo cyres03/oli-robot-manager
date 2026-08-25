@@ -55,11 +55,7 @@ def test_panel_lists_and_runs_selected_case(qtbot, monkeypatch):
     service = FakeService([_case()])
     panel = ManagedTestCasePanel(service)
     qtbot.addWidget(panel)
-    monkeypatch.setattr(
-        QMessageBox,
-        "warning",
-        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
-    )
+    monkeypatch.setattr(panel, "_confirm_execution", lambda _case: True)
 
     assert panel.table.rowCount() == 1
     assert panel.table.item(0, 1).text() == "Luna 主控只读快照"
@@ -70,6 +66,30 @@ def test_panel_lists_and_runs_selected_case(qtbot, monkeypatch):
     assert service.runs == [("luna-main-snapshot", True, None)]
     assert panel.cancel_btn.isEnabled()
     assert panel.table.item(0, 5).text() == "执行中"
+
+
+def test_confirmation_dialog_uses_readable_chinese_buttons(qtbot, monkeypatch):
+    panel = ManagedTestCasePanel(FakeService([_case()]))
+    qtbot.addWidget(panel)
+    captured = {}
+
+    def capture_dialog(box):
+        captured["text"] = box.text()
+        captured["detail"] = box.informativeText()
+        captured["confirm"] = box.button(QMessageBox.StandardButton.Yes).text()
+        captured["cancel"] = box.button(QMessageBox.StandardButton.No).text()
+        captured["style"] = box.styleSheet()
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "exec", capture_dialog)
+
+    assert panel._confirm_execution(_case()) is True
+    assert captured["text"] == "Luna 主控只读快照"
+    assert "远端命令" in captured["detail"]
+    assert "remote_command" not in captured["detail"]
+    assert captured["confirm"] == "确认执行"
+    assert captured["cancel"] == "取消"
+    assert "background: #FFFFFF" in captured["style"]
 
 
 def test_panel_streams_output_and_renders_result(qtbot):
@@ -101,6 +121,27 @@ def test_panel_streams_output_and_renders_result(qtbot):
     assert "目标: .2 主控 (10.192.1.2)" in panel.output.toPlainText()
     assert panel.table.item(0, 5).text() == "PASS"
     assert panel.run_btn.isEnabled()
+
+
+def test_panel_uses_blue_white_surface_and_cleans_ansi_output(qtbot):
+    case = _case()
+    service = FakeService([case])
+    panel = ManagedTestCasePanel(service)
+    qtbot.addWidget(panel)
+    panel._on_run_started(case)
+
+    service.output_line.emit("\x1b[01;31mnode=luna\x1b[0m\x1b[K", "stdout")
+
+    output = panel.output.toPlainText()
+    assert "node=luna" in output
+    assert "\x1b" not in output
+    assert "01;31m" not in output
+    assert panel.output.styleSheet() == ""
+    assert "#F6F9FF" in panel.styleSheet()
+    assert "#4F6BED" in panel.styleSheet()
+    assert "#111827" not in panel.styleSheet()
+    status_item = panel.table.item(0, 5)
+    assert status_item.background().color().name().upper() == "#EAF0FF"
 
 
 def test_panel_filters_by_node_category_and_risk(qtbot):

@@ -65,6 +65,26 @@ def test_sidebar_switches_product_navigation(qtbot):
     assert not sidebar._buttons["calibrate"].isHidden()
 
 
+def test_health_route_uses_product_specific_panel(qtbot, monkeypatch):
+    from ui.main_window import MainWindow
+
+    window = MainWindow.__new__(MainWindow)
+    window._active_workspace = LUNA_WORKSPACE
+    indices = []
+    window.stack = object()
+    window.status_bar_widget = type("Status", (), {"setVisible": lambda *_: None})()
+    window._switch_page = indices.append
+    window.terminal = type("Terminal", (), {"append_log": lambda *_: None})()
+
+    window._on_navigate("health_check")
+    assert indices == [7]
+
+    indices.clear()
+    window._active_workspace = OLI_WORKSPACE
+    window._on_navigate("health_check")
+    assert indices == [3]
+
+
 def test_resource_switch_clears_views_and_rejects_old_response(qapp):
     worker = McpWorker("ws://robot", "HU_D04_01_001")
     service = DanceService(worker)

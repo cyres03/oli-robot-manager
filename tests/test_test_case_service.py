@@ -73,12 +73,59 @@ def test_service_filters_cases_and_uses_profile_node(tmp_path, monkeypatch):
     assert worker.kwargs["case"].target_role == "speech_vision"
 
 
+def test_service_overrides_bundled_script_arguments_safely(tmp_path, monkeypatch):
+    service = _service(tmp_path, monkeypatch)
+    service.apply_context(L04_PROFILE, "HU_L04_01_090", "v1")
+
+    service.run_case(
+        "luna-mros-node-health",
+        arguments_override=("node|error; touch /tmp/never",),
+    )
+
+    worker = FakeWorker.instances[-1]
+    assert worker.kwargs["case"].arguments == ("node|error; touch /tmp/never",)
+    assert worker.kwargs["case"].source.value == "bundled_script"
+
+
+def test_service_rejects_invalid_argument_override(tmp_path, monkeypatch):
+    service = _service(tmp_path, monkeypatch)
+    service.apply_context(L04_PROFILE, "HU_L04_01_090", "v1")
+    errors = []
+    service.error_occurred.connect(errors.append)
+
+    service.run_case(
+        "luna-mros-node-health",
+        arguments_override=("node\nerror",),
+    )
+
+    assert FakeWorker.instances == []
+    assert errors == ["测试参数包含无效字符或长度超过 256"]
+
+
+def test_authorization_retry_preserves_argument_override(tmp_path, monkeypatch):
+    service = _service(tmp_path, monkeypatch)
+    service.apply_context(L04_PROFILE, "HU_L04_01_090", "v1")
+    service.run_case(
+        "luna-mros-node-health",
+        arguments_override=("Gesture|Audio",),
+    )
+    first_worker = FakeWorker.instances[-1]
+    first_worker.running = False
+    first_worker.authentication_required.emit(
+        "10.192.1.2", "limx", "HU_L04_01_090",
+    )
+
+    service.retry_after_authorization("luna-mros-node-health")
+
+    assert FakeWorker.instances[-1].kwargs["case"].arguments == ("Gesture|Audio",)
+
+
 def test_context_switch_cancels_worker_and_drops_old_result(tmp_path, monkeypatch):
     service = _service(tmp_path, monkeypatch)
     service.apply_context(L04_PROFILE, "HU_L04_01_090", "v1")
     results = []
     service.run_finished.connect(results.append)
-    service.run_case("luna-main-snapshot", approved=True)
+    service.run_case("luna-mros-node-health")
     worker = FakeWorker.instances[-1]
     generation = service._generation
     case = worker.kwargs["case"]
@@ -103,7 +150,7 @@ def test_context_switch_cancels_worker_and_drops_old_result(tmp_path, monkeypatc
 def test_service_persists_current_result(tmp_path, monkeypatch):
     service = _service(tmp_path, monkeypatch)
     service.apply_context(L04_PROFILE, "HU_L04_01_090", "v1")
-    service.run_case("luna-main-snapshot", approved=True)
+    service.run_case("luna-mros-node-health")
     worker = FakeWorker.instances[-1]
     case = worker.kwargs["case"]
     result = RunResult.create(
@@ -132,7 +179,7 @@ def test_late_authorization_request_is_dropped_after_context_switch(tmp_path, mo
     service.apply_context(L04_PROFILE, "HU_L04_01_090", "v1")
     requests = []
     service.ssh_authorization_required.connect(lambda *args: requests.append(args))
-    service.run_case("luna-main-snapshot", approved=True)
+    service.run_case("luna-mros-node-health")
     worker = FakeWorker.instances[-1]
 
     service.apply_context(OLI_PROFILE, "HU_D04_01_001", "v2")
@@ -147,7 +194,7 @@ def test_late_authorization_request_is_dropped_after_context_switch(tmp_path, mo
 def test_shutdown_cancels_and_waits_for_running_worker(tmp_path, monkeypatch):
     service = _service(tmp_path, monkeypatch)
     service.apply_context(L04_PROFILE, "HU_L04_01_090", "v1")
-    service.run_case("luna-main-snapshot", approved=True)
+    service.run_case("luna-mros-node-health")
     worker = FakeWorker.instances[-1]
 
     service.shutdown()
@@ -160,7 +207,7 @@ def test_shutdown_cancels_and_waits_for_running_worker(tmp_path, monkeypatch):
 def test_shutdown_waits_until_worker_stops_after_timeout(tmp_path, monkeypatch):
     service = _service(tmp_path, monkeypatch)
     service.apply_context(L04_PROFILE, "HU_L04_01_090", "v1")
-    service.run_case("luna-main-snapshot", approved=True)
+    service.run_case("luna-mros-node-health")
     worker = FakeWorker.instances[-1]
     worker.wait_results = [False, True]
     errors = []

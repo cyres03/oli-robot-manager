@@ -31,8 +31,17 @@ class FakeClient:
         del timeout, cancel_event
         return True
 
-    def execute_managed(self, command, on_line, cancel_event, timeout, max_output_bytes):
+    def execute_managed(
+        self,
+        command,
+        on_line,
+        cancel_event,
+        timeout,
+        max_output_bytes,
+        allocate_pty=False,
+    ):
         self.commands.append(("managed", command))
+        self.allocate_pty = allocate_pty
         for line in self.stdout.splitlines():
             on_line(line, "stdout")
         return SshResult(self.exit_code, self.stdout, "")

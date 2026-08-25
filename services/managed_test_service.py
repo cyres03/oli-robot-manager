@@ -1,5 +1,5 @@
 """Lifecycle and persistence for managed robot test cases."""
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 import os
 from pathlib import Path
@@ -42,7 +42,9 @@ class TestCaseService(QObject):
         self._firmware = "unknown"
         self._generation = 0
         self._worker: TestCaseWorker | None = None
-        self._pending_authorization: tuple[int, str, bool, Path | None] | None = None
+        self._pending_authorization: (
+            tuple[int, str, bool, Path | None, tuple[str, ...] | None] | None
+        ) = None
 
     def apply_context(
         self,
@@ -79,6 +81,7 @@ class TestCaseService(QObject):
         case_id: str,
         approved: bool = False,
         local_script_path: Path | None = None,
+        arguments_override: tuple[str, ...] | None = None,
     ):
         if self._worker and self._worker.isRunning():
             self.error_occurred.emit("已有测试用例正在执行")
@@ -94,8 +97,9 @@ class TestCaseService(QObject):
             self.error_occurred.emit(f"当前型号不支持测试用例 {case_id}")
             return
         try:
+            case = self._with_arguments(case, arguments_override)
             case.validate_approval(approved)
-        except PermissionError as error:
+        except (PermissionError, ValueError) as error:
             self.error_occurred.emit(str(error))
             return
 
@@ -134,7 +138,7 @@ class TestCaseService(QObject):
             lambda host, username, robot_id, current=generation:
             self._on_authentication_required(
                 current, host, username, robot_id,
-                case.case_id, approved, local_script_path,
+                case.case_id, approved, local_script_path, arguments_override,
             )
         )
         self._worker = worker
@@ -161,11 +165,11 @@ class TestCaseService(QObject):
         self._pending_authorization = None
         if not pending:
             return
-        generation, pending_case_id, approved, local_path = pending
+        generation, pending_case_id, approved, local_path, arguments = pending
         if generation != self._generation or pending_case_id != case_id:
             return
         self._worker = None
-        self.run_case(case_id, approved, local_path)
+        self.run_case(case_id, approved, local_path, arguments)
 
     def cancel_authorization(self, case_id: str, detail: str):
         pending = self._pending_authorization
@@ -196,11 +200,12 @@ class TestCaseService(QObject):
         case_id: str,
         approved: bool,
         local_path: Path | None,
+        arguments: tuple[str, ...] | None,
     ):
         if generation != self._generation:
             return
         self._pending_authorization = (
-            generation, case_id, approved, local_path,
+            generation, case_id, approved, local_path, arguments,
         )
         self._worker = None
         self.ssh_authorization_required.emit(
@@ -219,6 +224,25 @@ class TestCaseService(QObject):
             encoding="utf-8",
         )
         os.chmod(result_path, 0o600)
+
+    @staticmethod
+    def _with_arguments(
+        case: TestCaseDefinition,
+        arguments: tuple[str, ...] | None,
+    ) -> TestCaseDefinition:
+        if arguments is None:
+            return case
+        if case.source.value == "remote_command":
+            raise ValueError("远端命令用例不允许覆盖参数")
+        values = tuple(str(value) for value in arguments)
+        if len(values) > 16:
+            raise ValueError("测试参数不能超过 16 个")
+        if any(
+            len(value) > 256 or "\0" in value or "\n" in value or "\r" in value
+            for value in values
+        ):
+            raise ValueError("测试参数包含无效字符或长度超过 256")
+        return replace(case, arguments=values)
 
     def _emit_if_current(self, generation: int, signal, *args):
         if generation == self._generation:

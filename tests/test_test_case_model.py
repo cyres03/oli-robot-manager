@@ -18,13 +18,25 @@ def test_builtin_luna_cases_target_profile_roles_without_ips():
     cases = load_test_cases(PROJECT_ROOT / "resources/test_cases/cases.json")
 
     assert [case.case_id for case in cases] == [
-        "luna-main-snapshot",
+        "luna-mros-node-health",
         "luna-speech-vision-snapshot",
     ]
     assert {case.target_role for case in cases} == {"main", "speech_vision"}
     assert all(case.product_key == "hu_l04_01" for case in cases)
     assert all("10.192." not in case.command for case in cases)
     assert all(case.is_first_phase_safe for case in cases)
+    mros_case = cases[0]
+    assert mros_case.source == Source.BUNDLED_SCRIPT
+    assert mros_case.target_role == "main"
+    assert mros_case.script_path == "scripts/mros_node_health.sh"
+    assert mros_case.arguments == (".",)
+    assert mros_case.requires_pty is True
+    assert cases[1].requires_pty is False
+    assert cases[1].category == "伴随节点"
+    script = (PROJECT_ROOT / "resources/test_cases" / mros_case.script_path).read_text(
+        encoding="utf-8"
+    )
+    assert "mrosconsole 2>&1 | grep -E -m 200 --" in script
 
 
 def test_high_risk_case_requires_explicit_approval():

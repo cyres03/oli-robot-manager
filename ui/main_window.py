@@ -33,6 +33,7 @@ from ui.panels.calibrate_panel import CalibratePanel
 from ui.panels.control_panel import ControlPanel
 from ui.panels.acceptance_test_panel import AcceptanceTestPanel
 from ui.panels.managed_test_panel import TestCasePanel
+from ui.panels.mros_node_health_panel import MrosNodeHealthPanel
 from ui.dialogs.ssh_terminal_window import open_native_ssh_terminal
 from ui.dialogs.password_dialog import PasswordDialog
 from config import ROBOT_CONFIG
@@ -136,6 +137,7 @@ class MainWindow(QMainWindow):
         self.calibrate_panel = CalibratePanel(self._calibrate_service)
         self.settings_panel = SettingsPanel()
         self.test_case_panel = TestCasePanel(self._test_case_service)
+        self.mros_node_health_panel = MrosNodeHealthPanel(self._test_case_service)
 
         self.stack.addWidget(self.dance_panel)      # 0: 舞蹈&动作库
         self.stack.addWidget(self.control_panel)     # 1: 基础控制
@@ -144,6 +146,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.calibrate_panel)   # 4: 校零
         self.stack.addWidget(self.settings_panel)    # 5: 设置
         self.stack.addWidget(self.test_case_panel)   # 6: 测试用例
+        self.stack.addWidget(self.mros_node_health_panel)  # 7: Luna mROS 节点健康
         self.stack.setCurrentIndex(0)
         self._setup_stack_animation()
 
@@ -411,7 +414,7 @@ class MainWindow(QMainWindow):
             "test_cases": 6,
             "acceptance": 2,
             "log_analysis": 2,
-            "health_check": 3,
+            "health_check": 7 if self._active_workspace.key == "luna" else 3,
             "power_cycle": 2,
             "calibrate": 4,
             "settings": 5,

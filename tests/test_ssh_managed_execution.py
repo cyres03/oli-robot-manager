@@ -49,9 +49,11 @@ class FakeConnection:
         self.channel = channel
         self.termination_exit_code = termination_exit_code
         self.commands = []
+        self.pty_flags = []
 
-    def exec_command(self, command, timeout=None):
+    def exec_command(self, command, timeout=None, get_pty=False):
         self.commands.append((command, timeout))
+        self.pty_flags.append(get_pty)
         if "kill -TERM" in command:
             termination = FakeChannel(exit_code=self.termination_exit_code)
             return None, FakeStream(termination), FakeStream(termination)
@@ -90,6 +92,27 @@ def test_managed_execution_streams_compound_command_output():
     ]
     assert "setsid sh -c" in connection.commands[0][0]
     assert "hostname" in connection.commands[0][0]
+
+
+def test_managed_execution_can_use_isolated_ssh_pty():
+    channel = FakeChannel(
+        stdout_chunks=[b"__OLI_TEST_PID__=43\r\nnode=test\r\n"],
+    )
+    client, connection = _client(channel)
+
+    result = client.execute_managed(
+        "mrosconsole | grep -E '.'",
+        lambda *_: None,
+        threading.Event(),
+        timeout=5,
+        allocate_pty=True,
+    )
+
+    assert result.stdout == "node=test"
+    assert connection.pty_flags[0] is True
+    assert connection.commands[0][0].startswith("sh -c ")
+    assert "setsid sh -c" not in connection.commands[0][0]
+    assert "无法隔离 PTY 测试进程组" in connection.commands[0][0]
 
 
 def test_managed_execution_cancels_remote_process_group():

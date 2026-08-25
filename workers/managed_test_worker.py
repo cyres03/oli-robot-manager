@@ -106,6 +106,7 @@ class TestCaseWorker(QThread):
                     self._cancel_event,
                     timeout=self.case.timeout_seconds,
                     max_output_bytes=1024 * 1024,
+                    allocate_pty=self.case.requires_pty,
                 )
             finally:
                 with self._client_lock:

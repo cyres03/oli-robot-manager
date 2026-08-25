@@ -278,12 +278,19 @@ class SshClient:
         cancel_event: threading.Event,
         timeout: float,
         max_output_bytes: int = 1024 * 1024,
+        allocate_pty: bool = False,
     ) -> SshResult:
         if not self._client:
             raise RuntimeError("Not connected. Call connect() first.")
 
         marker = "__OLI_TEST_PID__="
         pid_file = f"/tmp/.oli-robot-manager-{uuid.uuid4().hex}.pid"
+        process_group_guard = (
+            'pgid=$(ps -o pgid= -p "$$" | tr -d " "); '
+            'if [ "$pgid" != "$$" ]; then '
+            'printf "%s\\n" "无法隔离 PTY 测试进程组" >&2; exit 125; fi; '
+            if allocate_pty else ""
+        )
         launch_script = (
             "pid_file=$1; "
             'tmp_file="${pid_file}.tmp.$$"; '
@@ -292,15 +299,20 @@ class SshClient:
             'mv -f -- "$tmp_file" "$pid_file"; '
             'trap \'rm -f -- "$pid_file" "$tmp_file"\' EXIT; '
             f'printf "{marker}%s\\n" "$$"; '
+            f"{process_group_guard}"
             f"{command}"
         )
+        launcher = "sh -c" if allocate_pty else "setsid sh -c"
         wrapped = " ".join([
-            "setsid sh -c",
+            launcher,
             shlex.quote(launch_script),
             "oli-managed-test",
             shlex.quote(pid_file),
         ])
-        _, stdout, stderr = self._client.exec_command(wrapped)
+        _, stdout, stderr = self._client.exec_command(
+            wrapped,
+            get_pty=allocate_pty,
+        )
         channel = stdout.channel
         started_at = time.monotonic()
         remote_pid = None

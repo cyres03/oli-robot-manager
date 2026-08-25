@@ -78,6 +78,7 @@ class TestCaseDefinition:
     artifacts: tuple[ArtifactDefinition, ...] = ()
     risks: frozenset[TestRisk] = frozenset()
     cleanup: bool = True
+    requires_pty: bool = False
 
     @property
     def confirmation_reasons(self) -> tuple[str, ...]:
@@ -219,6 +220,9 @@ def _parse_case(raw: object, resource_root: Path) -> TestCaseDefinition:
         raise ValueError(f"测试用例 {case_id} 的 cleanup 必须是布尔值")
     if not cleanup:
         raise ValueError(f"测试用例 {case_id} 必须清理远端会话目录")
+    requires_pty = raw.get("requires_pty", False)
+    if not isinstance(requires_pty, bool):
+        raise ValueError(f"测试用例 {case_id} 的 requires_pty 必须是布尔值")
     return TestCaseDefinition(
         case_id=case_id,
         name=str(raw.get("name", case_id)).strip(),
@@ -237,6 +241,7 @@ def _parse_case(raw: object, resource_root: Path) -> TestCaseDefinition:
         artifacts=artifacts,
         risks=risks,
         cleanup=cleanup,
+        requires_pty=requires_pty,
     )
 
 
