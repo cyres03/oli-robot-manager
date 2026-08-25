@@ -83,6 +83,7 @@ class ControlPanel(QWidget):
         self._robot_status = "unknown"
         self._last_robot_status_key = None
         self._tool_buttons: dict[str, QPushButton] = {}
+        self._tool_default_tips: dict[str, str] = {}
         self._posture_cycle_timer: QTimer | None = None
         self._posture_cycle_active = False
         self._posture_cycle_kind = ""
@@ -258,6 +259,7 @@ class ControlPanel(QWidget):
                 else:
                     grid.addWidget(btn, i // 2, i % 2)
                 self._tool_buttons[tool] = btn
+                self._tool_default_tips[tool] = tip
 
             layout.addWidget(grp)
 
@@ -334,6 +336,10 @@ class ControlPanel(QWidget):
 
     def _update_button_states(self):
         """Update buttons from robot mode and hanging safety guard."""
+        for button_key, button in self._tool_buttons.items():
+            button.setEnabled(True)
+            button.setToolTip(self._tool_default_tips.get(button_key, ""))
+
         walk_btn = self._tool_buttons.get("set_walk_mode")
         if walk_btn:
             can_walk = self._current_mode in WALK_ALLOWED_MODES
@@ -414,6 +420,7 @@ class ControlPanel(QWidget):
         self._robot_status = status
         status_map = {
             "Damping": "damping",
+            "Damped": "damping",
             "ZeroTorque": "zero_torque",
             "Walk": "set_walk_mode",
             "Stand": "set_walk_mode",

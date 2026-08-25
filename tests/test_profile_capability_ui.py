@@ -40,6 +40,78 @@ def test_oli_control_panel_preserves_existing_commands(qtbot):
     assert panel._tool_buttons["audio_wakeup_enable"].isEnabled()
 
 
+def test_switching_from_l04_to_oli_restores_existing_commands(qtbot):
+    worker = _worker(L04_PROFILE)
+    panel = ControlPanel(worker)
+    qtbot.addWidget(panel)
+    actions = []
+    panel.action_requested.connect(
+        lambda name, arguments: (
+            actions.append((name, arguments)),
+            worker.call_tool(name, arguments),
+        )
+    )
+
+    panel.apply_profile(L04_PROFILE)
+    assert not panel._tool_buttons["prepare"].isEnabled()
+
+    worker.update_target(
+        "HU_D04_01_062",
+        OLI_PROFILE.allowed_tools,
+        profile_key=OLI_PROFILE.key,
+    )
+    panel.apply_profile(OLI_PROFILE)
+    panel.update_robot_status({
+        "robot_status": "Damped",
+        "ability": "?",
+        "mode": "?",
+    })
+
+    for button_key in (
+        "prepare",
+        "standup",
+        "safe_stop",
+        "set_walk_mode",
+        "set_motion_engine_1",
+        "audio_wakeup_enable",
+        "led_green",
+    ):
+        button = panel._tool_buttons[button_key]
+        assert button.isEnabled()
+        assert "尚未开放" not in button.toolTip()
+
+    for button_key in ("sit_down", "lie_down", "straight_walk"):
+        button = panel._tool_buttons[button_key]
+        assert not button.isEnabled()
+        assert "吊装保护" in button.toolTip()
+
+    for button_key in ("damping", "zero_torque"):
+        button = panel._tool_buttons[button_key]
+        assert not button.isEnabled()
+        assert "需先勾选" in button.toolTip()
+
+    panel._tool_buttons["prepare"].click()
+    assert actions == [("prepare", {})]
+    assert worker._pending_requests[-1][:2] == ("prepare", {})
+
+
+def test_clearing_profile_locks_all_control_commands(qtbot):
+    worker = _worker(OLI_PROFILE)
+    panel = ControlPanel(worker)
+    qtbot.addWidget(panel)
+
+    panel.apply_profile(OLI_PROFILE)
+    assert panel._tool_buttons["prepare"].isEnabled()
+
+    panel.apply_profile(None)
+
+    assert all(not button.isEnabled() for button in panel._tool_buttons.values())
+    assert all(
+        "尚未开放" in button.toolTip()
+        for button in panel._tool_buttons.values()
+    )
+
+
 def test_l04_dance_library_is_query_only(qtbot, monkeypatch):
     worker = _worker(L04_PROFILE)
     service = DanceService(worker)
