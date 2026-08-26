@@ -24,12 +24,19 @@ def _log_startup_error(exc: Exception) -> None:
         f.write(f"sys._MEIPASS={getattr(sys, '_MEIPASS', 'N/A')}\n")
         f.write(f"sys.argv={sys.argv}\n")
         f.write(f"sys.path[:3]={sys.path[:3]}\n")
-        traceback.print_exc(file=f)
-    from PyQt6.QtWidgets import QMessageBox
-    QMessageBox.critical(
-        None, "启动失败",
-        f"{exc}\n\n详情已写入:\n{log_path}"
-    )
+        traceback.print_exception(type(exc), exc, exc.__traceback__, file=f)
+    message = f"{exc}\n\n详情已写入:\n{log_path}"
+    try:
+        from PyQt6.QtWidgets import QApplication
+
+        if QApplication.instance() is not None:
+            from ui.dialogs.message_dialog import AppMessageBox
+
+            AppMessageBox.critical(None, "启动失败", message)
+            return
+    except Exception:
+        pass
+    print(f"启动失败: {message}", file=sys.stderr)
 
 
 def main():

@@ -1,12 +1,13 @@
 """WiFi network selector dialog - shows robot networks and lets user pick one."""
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QListWidget, QListWidgetItem, QGroupBox, QMessageBox,
+    QListWidget, QListWidgetItem, QGroupBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from network.wifi_manager import WifiManager
 from config import ROBOT_CONFIG
 from models.robot_profile import resolve_robot_profile
+from ui.dialogs.message_dialog import AppMessageBox
 
 
 class WifiSelectorDialog(QDialog):
@@ -110,7 +111,7 @@ class WifiSelectorDialog(QDialog):
             else:
                 # Connection command may fail but user might already be connected
                 # or Windows will connect asynchronously — accept anyway
-                QMessageBox.information(
+                AppMessageBox.information(
                     self, "提示",
                     f"已发送连接请求到 {ssid}\n"
                     "如果未自动连接，请手动在系统WiFi中选择该网络。\n密码: 12345678")

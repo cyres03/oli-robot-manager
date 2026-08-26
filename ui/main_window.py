@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QSplitter, QFrame, QMessageBox,
+    QMainWindow, QWidget, QVBoxLayout, QSplitter, QFrame,
     QGraphicsOpacityEffect,
 )
 from PyQt6.QtCore import Qt, QEasingCurve, QPropertyAnimation, QAbstractAnimation, QTimer, QEvent
@@ -36,6 +36,7 @@ from ui.panels.managed_test_panel import TestCasePanel
 from ui.panels.mros_node_health_panel import MrosNodeHealthPanel
 from ui.dialogs.ssh_terminal_window import open_native_ssh_terminal
 from ui.dialogs.password_dialog import PasswordDialog
+from ui.dialogs.message_dialog import AppMessageBox
 from config import ROBOT_CONFIG
 
 
@@ -790,7 +791,7 @@ class MainWindow(QMainWindow):
             )
             return
         on_failure(detail)
-        QMessageBox.warning(self, "SSH 密钥授权失败", detail)
+        AppMessageBox.warning(self, "SSH 密钥授权失败", detail)
 
     def _clear_current_robot_credentials(self):
         robot_id = ROBOT_CONFIG.ws_accid
@@ -802,7 +803,7 @@ class MainWindow(QMainWindow):
             ],
         )
         self.settings_panel.refresh_credential_status()
-        QMessageBox.information(
+        AppMessageBox.information(
             self,
             "清除已保存密码",
             f"已清除机器人 {robot_id} 的 {cleared} 个系统凭据。",

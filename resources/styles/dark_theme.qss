@@ -133,6 +133,23 @@ QToolTip {
     padding: 6px 10px; border-radius: 6px; font-size: 12px;
 }
 
+/* ── Message dialogs ── */
+QMessageBox {
+    background: #FFFFFF; color: #1D2129;
+}
+QMessageBox QLabel {
+    background: transparent; color: #1D2129;
+}
+QMessageBox QPushButton {
+    min-width: 96px; min-height: 36px;
+    background: #FFFFFF; color: #1D2129;
+    border: 1px solid #C9CDD4; border-radius: 6px;
+    padding: 6px 18px; font-weight: 600;
+}
+QMessageBox QPushButton:hover {
+    background: #F2F3F5; border-color: #A9AEB8;
+}
+
 /* ── ScrollArea ── */
 QScrollArea { border: none; background: transparent; }
 
