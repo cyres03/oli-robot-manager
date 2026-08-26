@@ -48,6 +48,21 @@ TIME_CHECK_COMMAND = (
     "date '+TIME=%Y-%m-%d %H:%M:%S %z'; "
     "printf 'ZONE='; timedatectl show -p Timezone --value"
 )
+PORTAL_PAGE_MARKERS = (
+    ("LimX Robot Manager", "Robot Manager"),
+    ("LimX Studio", "LimX Studio"),
+    ("get_robot_info", "机器人信息 API"),
+)
+
+
+def _evaluate_portal_response(status_code: int, body: str) -> tuple[bool, str]:
+    if status_code != 200:
+        return False, "状态码异常"
+    normalized_body = body.casefold()
+    for marker, page_name in PORTAL_PAGE_MARKERS:
+        if marker.casefold() in normalized_body:
+            return True, page_name
+    return False, "页面标识未识别"
 
 
 def _fetch_network_beijing_time() -> tuple[datetime, float]:
@@ -629,9 +644,10 @@ class AcceptanceTestPanel(QWidget):
 
     def _on_http_done(self, row_index: int, check: AcceptanceCheck, status_code: int, body: str):
         passed = 200 <= status_code < 500
-        if check.key == "portal":
-            passed = status_code == 200 and ("LimX Robot Manager" in body or "get_robot_info" in body)
         summary = f"HTTP {status_code}"
+        if check.key == "portal":
+            passed, portal_page = _evaluate_portal_response(status_code, body)
+            summary = f"HTTP {status_code} · {portal_page}"
         detail = body.strip()[:600] or summary
         self._finish_check(row_index, passed, summary, detail)
 
