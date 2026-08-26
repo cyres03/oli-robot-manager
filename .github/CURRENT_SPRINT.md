@@ -13,9 +13,9 @@
 
 | Issue | 类型 | 故事点 | 平台 | 状态 |
 |-------|------|--------|------|------|
-| #49 | Task | 5 | Cross-platform | In Progress |
+| #49 | Task | 5 | Cross-platform | Done |
 
-当前 WIP：#49（1 项）
+当前 WIP：0
 
 ## Story 拆分
 
@@ -42,10 +42,10 @@
 
 ## Sprint Review
 
-- Sprint Goal：本地实现完成，待 PR/CI
+- Sprint Goal：达成
 - 自动化测试：160 passed
 - Windows：源码窗口启动，数据库迁移成功，无新崩溃日志
-- Linux：待 PR CI 验证
+- Windows/Linux CI：通过（PR #52）
 - 真机：仅验证现有自动验收只读项，不新增命令
 
 ## Retrospective
