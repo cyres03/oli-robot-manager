@@ -10,6 +10,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 def test_startup_error_without_qapplication_falls_back_to_stderr(tmp_path):
     environment = dict(os.environ)
     environment["HOME"] = str(tmp_path)
+    environment["USERPROFILE"] = str(tmp_path)
+    environment["PYTHONIOENCODING"] = "utf-8"
     result = subprocess.run(
         [
             sys.executable,
