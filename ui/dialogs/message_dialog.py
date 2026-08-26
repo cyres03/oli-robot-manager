@@ -2,7 +2,7 @@
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPalette
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QLabel, QMessageBox, QSizePolicy
 
 
 class AppMessageBox(QMessageBox):
@@ -28,19 +28,32 @@ class AppMessageBox(QMessageBox):
         self.setTextFormat(Qt.TextFormat.PlainText)
         self.setStandardButtons(QMessageBox.StandardButton.Ok)
         self.setDefaultButton(QMessageBox.StandardButton.Ok)
-        self.setMinimumWidth(460)
+
+        self._message_labels = [
+            label
+            for object_name in ("qt_msgbox_label", "qt_msgbox_informativelabel")
+            if (label := self.findChild(QLabel, object_name)) is not None
+        ]
+        for label in self._message_labels:
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            label.setSizePolicy(
+                QSizePolicy.Policy.Preferred,
+                QSizePolicy.Policy.MinimumExpanding,
+            )
 
         confirm_button = self.button(QMessageBox.StandardButton.Ok)
         if confirm_button:
             confirm_button.setText("确定")
             confirm_button.setObjectName("confirmButton")
+            confirm_button.setFixedWidth(112)
 
         self.setStyleSheet(
             "QMessageBox#appMessageBox { background: #FFFFFF; color: #1D2129; }"
             "QMessageBox#appMessageBox QLabel { background: transparent; color: #1D2129; "
             "font-size: 14px; }"
             "QMessageBox#appMessageBox QLabel#qt_msgbox_label, "
-            "QMessageBox#appMessageBox QLabel#qt_msgbox_informativelabel { min-width: 320px; }"
+            "QMessageBox#appMessageBox QLabel#qt_msgbox_informativelabel { min-width: 0; }"
             "QMessageBox#appMessageBox QPushButton { min-width: 96px; min-height: 36px; "
             "border-radius: 6px; padding: 6px 18px; font-size: 14px; font-weight: 600; }"
             "QMessageBox#appMessageBox QPushButton#confirmButton { background: #6C5CE7; "
@@ -50,6 +63,17 @@ class AppMessageBox(QMessageBox):
             "QMessageBox#appMessageBox QPushButton#confirmButton:pressed { background: #4E3FB8; "
             "border-color: #4E3FB8; }"
         )
+        self._constrain_message_width()
+
+    def _constrain_message_width(self) -> None:
+        screen = self.screen()
+        available_width = screen.availableGeometry().width() if screen else 800
+        maximum_label_width = max(220, min(520, available_width - 160))
+        for label in self._message_labels:
+            natural_width = label.fontMetrics().horizontalAdvance(label.text()) + 8
+            label_width = min(maximum_label_width, max(240, natural_width))
+            label.setFixedWidth(label_width)
+        self.adjustSize()
 
     @classmethod
     def information(cls, parent, title: str, text: str) -> int:

@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QImage, QPainter
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QLabel, QMessageBox
 
 from ui.dialogs.message_dialog import AppMessageBox
 
@@ -94,3 +94,28 @@ def test_application_theme_keeps_raw_message_box_opaque(qapp, qtbot):
     assert "QMessageBox" in qapp.styleSheet()
 
     qapp.setStyleSheet(original_style)
+
+
+def test_long_message_wraps_inside_available_screen(qapp, qtbot):
+    text = (
+        "SSH 密码已验证且公钥已写入，但项目密钥复验失败: "
+        "SSH limx@10.192.1.2 failed (tried 1 key and 0 passwords): "
+        "timed out while waiting for SSH protocol banner"
+    )
+    dialog = AppMessageBox(
+        None,
+        "SSH 密钥授权失败",
+        text,
+        QMessageBox.Icon.Critical,
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qapp.processEvents()
+
+    label = dialog.findChild(QLabel, "qt_msgbox_label")
+    available_width = dialog.screen().availableGeometry().width()
+
+    assert label.wordWrap()
+    assert label.width() <= 520
+    assert label.geometry().right() < dialog.contentsRect().right()
+    assert dialog.width() <= available_width

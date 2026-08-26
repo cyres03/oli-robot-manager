@@ -40,6 +40,17 @@ from ui.dialogs.message_dialog import AppMessageBox
 from config import ROBOT_CONFIG
 
 
+def ssh_authorization_error_title(error_code: str) -> str:
+    return {
+        "authentication": "SSH 密码验证失败",
+        "key_write": "SSH 公钥写入失败",
+        "key_rejected": "SSH 公钥被拒绝",
+        "key_connection": "SSH 密钥复验未完成",
+        "robot_mismatch": "机器人连接已切换",
+        "connection": "SSH 连接失败",
+    }.get(error_code, "SSH 密钥授权失败")
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -791,7 +802,8 @@ class MainWindow(QMainWindow):
             )
             return
         on_failure(detail)
-        AppMessageBox.warning(self, "SSH 密钥授权失败", detail)
+        dialog_title = ssh_authorization_error_title(error_code)
+        AppMessageBox.warning(self, dialog_title, detail)
 
     def _clear_current_robot_credentials(self):
         robot_id = ROBOT_CONFIG.ws_accid
