@@ -1,5 +1,7 @@
 """Acceptance testing workbench for WiFi/SSH-based after-sales checks."""
+import getpass
 import os
+from pathlib import Path
 import re
 import shlex
 import time
@@ -29,6 +31,13 @@ from PyQt6.QtWidgets import (
 )
 
 from config import ROBOT_CONFIG
+from database.repository import AcceptanceSessionRepository
+from models.acceptance import (
+    AcceptanceItemResult,
+    AcceptanceItemStatus,
+    AcceptanceSession,
+    AcceptanceSessionStatus,
+)
 from models.robot_profile import OLI_PROFILE, RobotProfile
 from network.wifi_manager import WifiManager
 from services import credential_store
@@ -53,6 +62,14 @@ PORTAL_PAGE_MARKERS = (
     ("LimX Studio", "LimX Studio"),
     ("get_robot_info", "机器人信息 API"),
 )
+
+
+def _application_version() -> str:
+    version_path = Path(__file__).resolve().parents[2] / "VERSION"
+    try:
+        return version_path.read_text(encoding="utf-8").strip() or "unknown"
+    except OSError:
+        return "unknown"
 
 
 def _evaluate_portal_response(status_code: int, body: str) -> tuple[bool, str]:
@@ -318,7 +335,13 @@ class AcceptanceTestPanel(QWidget):
 
     CHECKS = build_acceptance_checks(OLI_PROFILE)
 
-    def __init__(self, power_cycle_service=None, parent=None, profile: RobotProfile | None = None):
+    def __init__(
+        self,
+        power_cycle_service=None,
+        parent=None,
+        profile: RobotProfile | None = None,
+        session_repository: AcceptanceSessionRepository | None = None,
+    ):
         super().__init__(parent)
         self._profile = profile or ROBOT_CONFIG.active_profile or OLI_PROFILE
         self.CHECKS = build_acceptance_checks(self._profile)
@@ -329,10 +352,18 @@ class AcceptanceTestPanel(QWidget):
         self._profile_generation = 0
         self._ssh_retry: tuple[int, AcceptanceCheck, str] | None = None
         self._pending_time_fix: tuple[int, AcceptanceCheck, str, str] | None = None
+        self._session_repository = session_repository or AcceptanceSessionRepository()
+        self._active_session: AcceptanceSession | None = None
         self._build_ui()
         self._populate_checks()
 
     def apply_profile(self, profile: RobotProfile | None):
+        next_profile_key = profile.key if profile else ""
+        if self._active_session and (
+            self._active_session.profile_key != next_profile_key
+            or self._active_session.robot_accid != ROBOT_CONFIG.ws_accid
+        ):
+            self.cancel_active_session("机器人工作区已切换")
         self._profile_generation += 1
         self._ssh_retry = None
         self._pending_time_fix = None
@@ -426,6 +457,11 @@ class AcceptanceTestPanel(QWidget):
         self.run_selected_btn = QPushButton("运行选中项")
         self.run_selected_btn.clicked.connect(self.run_selected_check)
         button_bar.addWidget(self.run_selected_btn)
+
+        self.cancel_btn = QPushButton("停止检查")
+        self.cancel_btn.clicked.connect(self.cancel_checks)
+        self.cancel_btn.setEnabled(False)
+        button_bar.addWidget(self.cancel_btn)
         button_bar.addStretch()
 
         self.summary_label = QLabel("就绪")
@@ -469,6 +505,7 @@ class AcceptanceTestPanel(QWidget):
                 self.check_table.setItem(row_index, column_index, item)
 
     def run_all_checks(self):
+        self._start_acceptance_session()
         self._pending = list(range(len(self.CHECKS)))
         self._set_running(True)
         self.detail_view.clear()
@@ -586,6 +623,7 @@ class AcceptanceTestPanel(QWidget):
         selected = self.check_table.currentRow()
         if selected < 0:
             return
+        self._start_acceptance_session()
         self._pending = [selected]
         self._set_running(True)
         self.detail_view.clear()
@@ -596,6 +634,7 @@ class AcceptanceTestPanel(QWidget):
             self._running_index = None
             self._set_running(False)
             self._update_summary()
+            self._finish_active_session(AcceptanceSessionStatus.COMPLETED)
             self.log_message.emit("[验收] 自动检查完成", "pass")
             return
 
@@ -1042,12 +1081,24 @@ class AcceptanceTestPanel(QWidget):
     def _finish_check(self, row_index: int, passed: bool, summary: str, detail: str):
         status = "PASS" if passed else "FAIL"
         self._set_row(row_index, status, summary, datetime.now().strftime("%H:%M:%S"))
+        self._record_result(
+            row_index,
+            AcceptanceItemStatus.PASS if passed else AcceptanceItemStatus.FAIL,
+            summary,
+            detail,
+        )
         self._append_detail(f"[{status}] {self.CHECKS[row_index].name}\n{detail}\n")
         self.log_message.emit(f"[验收] {self.CHECKS[row_index].name}: {status}", "pass" if passed else "error")
         self._run_next_check()
 
     def _finish_na(self, row_index: int, summary: str):
         self._set_row(row_index, "N/A", summary, datetime.now().strftime("%H:%M:%S"))
+        self._record_result(
+            row_index,
+            AcceptanceItemStatus.NOT_APPLICABLE,
+            summary,
+            summary,
+        )
         self._append_detail(f"[N/A] {self.CHECKS[row_index].name}\n{summary}\n")
         self.log_message.emit(f"[验收] {self.CHECKS[row_index].name}: N/A", "info")
         self._run_next_check()
@@ -1075,6 +1126,7 @@ class AcceptanceTestPanel(QWidget):
     def _set_running(self, running: bool):
         self.run_all_btn.setEnabled(not running)
         self.run_selected_btn.setEnabled(not running)
+        self.cancel_btn.setEnabled(running)
         self.summary_label.setText("执行中..." if running else "就绪")
 
     def _update_summary(self):
@@ -1097,3 +1149,72 @@ class AcceptanceTestPanel(QWidget):
         if generation == self._profile_generation:
             return callback(*args)
         return None
+
+    def _start_acceptance_session(self):
+        self.cancel_active_session("开始了新的验收会话")
+        self._active_session = AcceptanceSession.create(
+            robot_accid=ROBOT_CONFIG.ws_accid or "unknown",
+            profile_key=self._profile.key,
+            operator_name=getpass.getuser() or "unknown",
+            software_version=_application_version(),
+        )
+        self._session_repository.create(self._active_session)
+        self.log_message.emit(
+            f"[验收] 已创建会话 {self._active_session.session_id}",
+            "info",
+        )
+
+    def _record_result(
+        self,
+        row_index: int,
+        status: AcceptanceItemStatus,
+        summary: str,
+        detail: str,
+    ):
+        if not self._active_session:
+            return
+        check = self.CHECKS[row_index]
+        secrets = (
+            *ROBOT_CONFIG.main_control_passwords,
+            ROBOT_CONFIG.perception_password,
+            ROBOT_CONFIG.wifi_password,
+            ROBOT_CONFIG.router_admin_password,
+        )
+        result = AcceptanceItemResult.create(
+            check_key=check.key,
+            category=check.category,
+            name=check.name,
+            status=status,
+            summary=summary,
+            detail=detail,
+            secrets=secrets,
+        )
+        self._active_session.add_result(result)
+        self._session_repository.save_result(
+            self._active_session.session_id,
+            result,
+        )
+
+    def _finish_active_session(self, status: AcceptanceSessionStatus):
+        session = self._active_session
+        self._active_session = None
+        if not session:
+            return
+        session.finish(status)
+        self._session_repository.finish(session)
+
+    def cancel_checks(self):
+        self._profile_generation += 1
+        self._pending.clear()
+        self._running_index = None
+        self._ssh_retry = None
+        self._pending_time_fix = None
+        self._set_running(False)
+        self.cancel_active_session("用户停止了自动检查")
+
+    def cancel_active_session(self, reason: str = "验收会话已取消"):
+        if not self._active_session:
+            return
+        session_id = self._active_session.session_id
+        self._finish_active_session(AcceptanceSessionStatus.CANCELLED)
+        self.log_message.emit(f"[验收] {reason}: {session_id}", "warn")

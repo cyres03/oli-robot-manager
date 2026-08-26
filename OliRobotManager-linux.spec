@@ -13,6 +13,7 @@ a = Analysis(
         ('resources/test_cases/cases.json', 'resources/test_cases'),
         ('resources/test_cases/scripts/snapshot.py', 'resources/test_cases/scripts'),
         ('resources/test_cases/scripts/mros_node_health.sh', 'resources/test_cases/scripts'),
+        ('VERSION', '.'),
     ],
     hiddenimports=[
         'websockets',

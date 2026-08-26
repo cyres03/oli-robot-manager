@@ -52,6 +52,38 @@ class DatabaseConnection:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS acceptance_sessions (
+                session_id TEXT PRIMARY KEY,
+                robot_accid TEXT NOT NULL,
+                profile_key TEXT NOT NULL,
+                operator_name TEXT NOT NULL,
+                software_version TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                status TEXT NOT NULL,
+                pass_count INTEGER NOT NULL DEFAULT 0,
+                fail_count INTEGER NOT NULL DEFAULT 0,
+                not_applicable_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS acceptance_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                check_key TEXT NOT NULL,
+                category TEXT NOT NULL,
+                name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                executed_at TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                UNIQUE(session_id, check_key),
+                FOREIGN KEY(session_id) REFERENCES acceptance_sessions(session_id)
+                    ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_acceptance_sessions_started_at
+                ON acceptance_sessions(started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_acceptance_results_session
+                ON acceptance_results(session_id);
         """)
         columns = [row[1] for row in conn.execute("PRAGMA table_info(dance_counts)").fetchall()]
         indexes = conn.execute("PRAGMA index_list(dance_counts)").fetchall()

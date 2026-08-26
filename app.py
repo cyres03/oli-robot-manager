@@ -8,6 +8,7 @@ import sys
 from PyQt6.QtCore import QObject
 from config import ROBOT_CONFIG
 from database.connection import DatabaseConnection
+from database.repository import AcceptanceSessionRepository
 from workers.mcp_worker import McpWorker
 from services.dance_service import DanceService
 from services.health_check_service import HealthCheckService
@@ -30,6 +31,7 @@ class Application(QObject):
         # 1. Initialize database
         db = DatabaseConnection()
         db.initialize_schema()
+        AcceptanceSessionRepository(db).recover_interrupted_sessions()
 
         # 2. Resolve robot identity and apply its profile
         from config import detect_robot_identity
@@ -92,6 +94,7 @@ class Application(QObject):
         return self.main_window
 
     def shutdown(self):
+        self.main_window.acceptance_panel.cancel_active_session("应用退出")
         self.test_case_service.shutdown()
         self.mcp_worker.stop()
         self.robot_monitor.stop()
