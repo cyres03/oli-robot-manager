@@ -9,6 +9,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from network.ssh_client import DEFAULT_SSH_KEY_PATH, SshClient
 
 
+class SshKeyVerificationError(ConnectionError):
+    pass
+
+
 def ensure_operator_key(key_path: str = DEFAULT_SSH_KEY_PATH) -> str:
     key_path = os.path.expanduser(key_path)
     public_key_path = key_path + ".pub"
@@ -72,6 +76,7 @@ def install_operator_key(
         [password],
         key_path=key_path,
         robot_id=robot_id,
+        use_key=False,
     )
     try:
         client.connect(
@@ -104,5 +109,10 @@ def install_operator_key(
     )
     try:
         verifier.connect(timeout=timeout)
+    except Exception as error:
+        raise SshKeyVerificationError(
+            "SSH 密码已验证且公钥已写入，但项目密钥复验失败: "
+            f"{error}"
+        ) from error
     finally:
         verifier.close()
