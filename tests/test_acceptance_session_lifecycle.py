@@ -18,6 +18,12 @@ class RecordingSessionRepository:
     def finish(self, session):
         self.finished.append(session)
 
+    def list_recent(self, **kwargs):
+        return []
+
+    def get(self, session_id):
+        return None
+
 
 def test_selected_check_creates_and_completes_session(qtbot, monkeypatch):
     import config
@@ -80,3 +86,23 @@ def test_profile_switch_cancels_old_session(qtbot, monkeypatch):
 
     assert panel._active_session is None
     assert repository.finished[-1].status == AcceptanceSessionStatus.CANCELLED
+
+
+def test_failed_history_rerun_creates_new_session_without_overwriting_old(
+    qtbot, monkeypatch
+):
+    import config
+
+    repository = RecordingSessionRepository()
+    panel = AcceptanceTestPanel(profile=OLI_PROFILE, session_repository=repository)
+    qtbot.addWidget(panel)
+    monkeypatch.setattr(config.ROBOT_CONFIG, "ws_accid", "HU_D04_01_075")
+    monkeypatch.setattr(panel, "_run_next_check", lambda: None)
+
+    panel.rerun_failed_checks(["portal", "missing-check"])
+
+    assert len(repository.created) == 1
+    assert panel._pending == [
+        next(index for index, check in enumerate(panel.CHECKS) if check.key == "portal")
+    ]
+    assert panel.tabs.currentWidget() is panel.auto_tab
