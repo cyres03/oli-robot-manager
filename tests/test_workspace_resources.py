@@ -1,6 +1,11 @@
 import json
 
-from models.robot_profile import L04_PROFILE, OLI_PROFILE
+from models.robot_profile import (
+    L04_PROFILE,
+    OLI_PROFILE,
+    RobotIdentity,
+    RobotIdentityStatus,
+)
 from models.workspace import (
     CONNECTION_WORKSPACE,
     LUNA_WORKSPACE,
@@ -219,3 +224,143 @@ def test_connection_workspace_rejects_robot_page_navigation(qtbot, monkeypatch):
     window._on_navigate("controls")
 
     assert navigated == []
+
+
+def test_reapplying_same_workspace_preserves_navigation(qtbot, monkeypatch):
+    import config
+    from ui.main_window import MainWindow
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._active_workspace_key = "oli"
+    window._active_workspace = OLI_WORKSPACE
+    window._connection_service = type(
+        "ConnectionServiceStub", (), {"update_ssh": lambda *_: None}
+    )()
+    window._dance_service = type(
+        "DanceServiceStub",
+        (),
+        {
+            "switch_resource_context": lambda *_: None,
+            "load_dances": lambda *_: None,
+            "load_motions": lambda *_: None,
+        },
+    )()
+    window.status_banner = type(
+        "StatusBannerStub", (), {"set_identity": lambda *_: None}
+    )()
+    workspace_updates = []
+    navigated = []
+    monkeypatch.setattr(window.sidebar, "apply_workspace", workspace_updates.append)
+    monkeypatch.setattr(window, "_on_navigate", navigated.append)
+    monkeypatch.setattr(window, "_log_ui_event", lambda *args, **kwargs: None)
+    identity = RobotIdentity(
+        RobotIdentityStatus.READY,
+        accid="HU_D04_01_075",
+        profile=OLI_PROFILE,
+        ssid_accids=("HU_D04_01_075",),
+        portal_accid="HU_D04_01_075",
+    )
+
+    window.apply_robot_identity(identity)
+
+    assert workspace_updates == []
+    assert navigated == []
+    assert window._active_workspace is OLI_WORKSPACE
+    assert config.ROBOT_CONFIG.ws_accid == "HU_D04_01_075"
+
+
+def _identity_poll_window():
+    from ui.main_window import MainWindow
+
+    window = MainWindow.__new__(MainWindow)
+    window._active_workspace_key = "oli"
+    window._identity_no_target_count = 0
+    return window
+
+
+def test_identity_poll_debounces_single_no_target(monkeypatch):
+    import config
+
+    window = _identity_poll_window()
+    no_target = RobotIdentity(
+        RobotIdentityStatus.NO_TARGET,
+        message="未连接机器人 WiFi",
+    )
+    locked = []
+    applied = []
+    monkeypatch.setattr(config, "detect_robot_identity", lambda timeout: no_target)
+    monkeypatch.setattr(window, "_lock_transient_identity_loss", locked.append)
+    monkeypatch.setattr(window, "apply_robot_identity", applied.append)
+
+    window._poll_robot_identity()
+
+    assert locked == [no_target]
+    assert applied == []
+    assert window._active_workspace_key == "oli"
+    assert window._identity_no_target_count == 1
+
+
+def test_identity_poll_switches_after_sustained_no_target(monkeypatch):
+    import config
+
+    window = _identity_poll_window()
+    no_target = RobotIdentity(
+        RobotIdentityStatus.NO_TARGET,
+        message="未连接机器人 WiFi",
+    )
+    locked = []
+    applied = []
+    monkeypatch.setattr(config, "detect_robot_identity", lambda timeout: no_target)
+    monkeypatch.setattr(window, "_lock_transient_identity_loss", locked.append)
+    monkeypatch.setattr(
+        window,
+        "apply_robot_identity",
+        lambda identity: applied.append(identity),
+    )
+
+    window._poll_robot_identity()
+    window._poll_robot_identity()
+
+    assert locked == [no_target]
+    assert applied == [no_target]
+
+
+def test_identity_poll_restores_same_workspace_after_transient_loss(monkeypatch):
+    import config
+
+    window = _identity_poll_window()
+    no_target = RobotIdentity(
+        RobotIdentityStatus.NO_TARGET,
+        message="未连接机器人 WiFi",
+    )
+    ready = RobotIdentity(
+        RobotIdentityStatus.READY,
+        accid="HU_D04_01_075",
+        profile=OLI_PROFILE,
+        ssid_accids=("HU_D04_01_075",),
+        portal_accid="HU_D04_01_075",
+    )
+    identities = iter((no_target, ready))
+    locked = []
+    applied = []
+    monkeypatch.setattr(
+        config,
+        "detect_robot_identity",
+        lambda timeout: next(identities),
+    )
+    monkeypatch.setattr(window, "_lock_transient_identity_loss", locked.append)
+    monkeypatch.setattr(
+        window,
+        "apply_robot_identity",
+        lambda identity, message="": applied.append((identity, message)),
+    )
+    monkeypatch.setattr(config.ROBOT_CONFIG, "ws_accid", "")
+    monkeypatch.setattr(config.ROBOT_CONFIG, "profile_key", "")
+
+    window._poll_robot_identity()
+    window._poll_robot_identity()
+
+    assert locked == [no_target]
+    assert applied == [(ready, "检测到机器人网络变化，已切换控制目标")]
+    assert window._active_workspace_key == "oli"

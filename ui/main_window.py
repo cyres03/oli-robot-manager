@@ -40,6 +40,9 @@ from ui.dialogs.message_dialog import AppMessageBox
 from config import ROBOT_CONFIG
 
 
+IDENTITY_NO_TARGET_CONFIRMATIONS = 2
+
+
 def ssh_authorization_error_title(error_code: str) -> str:
     return {
         "authentication": "SSH 密码验证失败",
@@ -75,6 +78,7 @@ class MainWindow(QMainWindow):
         self._last_status_log_key: tuple[str, str] | None = None
         self._last_status_log_at = 0.0
         self._last_identity_status_key: tuple[str, str] | None = None
+        self._identity_no_target_count = 0
         self._active_workspace_key = "connection"
         self._active_workspace = CONNECTION_WORKSPACE
         self._was_minimized = False
@@ -281,6 +285,7 @@ class MainWindow(QMainWindow):
         message: str = "",
         initial: bool = False,
     ):
+        self._identity_no_target_count = 0
         previous_accid = ROBOT_CONFIG.ws_accid
         ready = ROBOT_CONFIG.apply_identity(identity)
         profile = ROBOT_CONFIG.active_profile
@@ -296,9 +301,11 @@ class MainWindow(QMainWindow):
                 profile.key if profile else "",
             )
         self.sidebar.apply_profile(profile)
-        self.sidebar.apply_workspace(workspace)
+        workspace_changed = workspace.key != self._active_workspace_key
+        if workspace_changed:
+            self.sidebar.apply_workspace(workspace)
         self._active_workspace = workspace
-        if workspace.key != self._active_workspace_key:
+        if workspace_changed:
             self._active_workspace_key = workspace.key
             self._on_navigate(workspace.default_route)
         if hasattr(self, "acceptance_panel"):
@@ -858,6 +865,23 @@ class MainWindow(QMainWindow):
         from config import detect_robot_identity
 
         identity = detect_robot_identity(timeout=0.35)
+        if (
+            identity.status == RobotIdentityStatus.NO_TARGET
+            and self._active_workspace_key != CONNECTION_WORKSPACE.key
+        ):
+            self._identity_no_target_count += 1
+            if self._identity_no_target_count < IDENTITY_NO_TARGET_CONFIRMATIONS:
+                self._lock_transient_identity_loss(identity)
+                return
+            self.apply_robot_identity(identity)
+            return
+
+        had_transient_loss = self._identity_no_target_count > 0
+        self._identity_no_target_count = 0
+        if had_transient_loss and not identity.ready:
+            self.apply_robot_identity(identity)
+            return
+
         current_profile_key = ROBOT_CONFIG.profile_key
         next_profile_key = identity.profile.key if identity.profile else ""
         if (
@@ -868,3 +892,27 @@ class MainWindow(QMainWindow):
                 identity,
                 "检测到机器人网络变化，已切换控制目标" if identity.ready else "",
             )
+
+    def _lock_transient_identity_loss(self, identity: RobotIdentity):
+        ROBOT_CONFIG.clear_identity()
+        self._connection_service.update_ssh(False)
+        if self._mcp_worker:
+            self._mcp_worker.update_target(None, frozenset(), profile_key="")
+        self.sidebar.apply_profile(None)
+        if hasattr(self, "control_panel"):
+            self.control_panel.apply_profile(None)
+        if hasattr(self, "dance_panel"):
+            self.dance_panel.apply_profile(None)
+        if hasattr(self, "calibrate_panel"):
+            self.calibrate_panel.apply_profile(None)
+        if hasattr(self, "settings_panel"):
+            self.settings_panel.apply_profile(None)
+        if self._test_case_service:
+            self._test_case_service.apply_context(None, "", "unknown")
+        self._dance_service.switch_resource_context("", "", "")
+        self.status_banner.set_identity_error(identity.message or "机器人连接暂时中断")
+        self._log_ui_event(
+            "identity_transient_loss",
+            count=self._identity_no_target_count,
+            workspace=self._active_workspace_key,
+        )
