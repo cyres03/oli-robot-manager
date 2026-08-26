@@ -103,11 +103,13 @@ class SshClient:
         key_path: str | None = None,
         robot_id: str = "",
         known_hosts_path: str = DEFAULT_ROBOT_KNOWN_HOSTS_PATH,
+        use_key: bool = True,
     ):
         self.host = host
         self.username = username
-        self._passwords = passwords or [""]
+        self._passwords = [""] if passwords is None else passwords
         self._key_path = os.path.expanduser(key_path or DEFAULT_SSH_KEY_PATH)
+        self._use_key = use_key
         self.robot_id = robot_id
         self._known_hosts_path = os.path.expanduser(known_hosts_path)
         self._used_password = ""
@@ -140,8 +142,10 @@ class SshClient:
                 )
 
         last_error = None
-        authentication_failed = False
-        if os.path.isfile(self._key_path):
+        key_authentication_failed = False
+        password_authentication_failed = False
+        key_available = self._use_key and os.path.isfile(self._key_path)
+        if key_available:
             self._raise_if_cancelled(cancel_event)
             client = self._create_client()
             self._client = client
@@ -167,7 +171,7 @@ class SshClient:
                 raise
             except Exception as e:
                 last_error = e
-                authentication_failed = self._is_authentication_error(e)
+                key_authentication_failed = self._is_authentication_error(e)
                 client.close()
                 if self._client is client:
                     self._client = None
@@ -200,7 +204,7 @@ class SshClient:
                 raise
             except paramiko.AuthenticationException as e:
                 last_error = e
-                authentication_failed = True
+                password_authentication_failed = True
                 client.close()
                 if self._client is client:
                     self._client = None
@@ -209,7 +213,9 @@ class SshClient:
                 continue
             except Exception as e:
                 last_error = e
-                authentication_failed = authentication_failed or self._is_authentication_error(e)
+                password_authentication_failed = (
+                    self._is_authentication_error(e)
+                )
                 client.close()
                 if self._client is client:
                     self._client = None
@@ -218,7 +224,17 @@ class SshClient:
                 continue
 
         self._client = None
-        key_attempt = "1 key" if os.path.isfile(self._key_path) else "no key"
+        key_attempt = "1 key" if key_available else "no key"
+        if not key_available and not self._passwords:
+            last_error = SshAuthenticationError(
+                "no SSH key or password available"
+            )
+            key_authentication_failed = True
+        authentication_failed = (
+            password_authentication_failed
+            if self._passwords
+            else key_authentication_failed
+        )
         error_type = SshAuthenticationError if authentication_failed else ConnectionError
         raise error_type(
             f"SSH {self.username}@{self.host} failed "

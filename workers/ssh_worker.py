@@ -24,7 +24,7 @@ class SshWorker(QThread):
         self.host = host
         self.username = username
         self.robot_id = robot_id or ROBOT_CONFIG.ws_accid
-        self._passwords = passwords or [""]
+        self._passwords = [""] if passwords is None else passwords
         self._command = ""
         self._stdin_text = ""
         self._transient_credential = ""
