@@ -41,6 +41,7 @@ from models.acceptance import (
 from models.robot_profile import OLI_PROFILE, RobotProfile
 from network.wifi_manager import WifiManager
 from services import credential_store
+from ui.panels.acceptance_history_panel import AcceptanceHistoryPanel
 from ui.panels.log_analyzer_panel import LogAnalyzerPanel
 from ui.panels.power_cycle_panel import PowerCyclePanel
 from workers.ssh_worker import SshWorker
@@ -374,6 +375,8 @@ class AcceptanceTestPanel(QWidget):
         self._populate_checks()
         self.detail_view.clear()
         self.summary_label.setText(f"{self._profile.display_name} · 就绪")
+        if hasattr(self, "history_panel"):
+            self.history_panel.apply_profile(self._profile.key)
 
     def _build_ui(self):
         self.setStyleSheet(
@@ -488,6 +491,12 @@ class AcceptanceTestPanel(QWidget):
         auto_layout.addWidget(self.detail_view)
 
         self.tabs.addTab(self.auto_tab, "自动验收")
+        self.history_panel = AcceptanceHistoryPanel(
+            self._session_repository,
+            self._profile.key,
+        )
+        self.history_panel.rerun_requested.connect(self.rerun_failed_checks)
+        self.tabs.addTab(self.history_panel, "历史记录")
         self.log_analyzer = LogAnalyzerPanel()
         self.tabs.addTab(self.log_analyzer, "日志分析")
         if self._power_cycle_service is not None:
@@ -627,6 +636,27 @@ class AcceptanceTestPanel(QWidget):
         self._pending = [selected]
         self._set_running(True)
         self.detail_view.clear()
+        self._run_next_check()
+
+    def rerun_failed_checks(self, check_keys: list[str]):
+        if self._active_session:
+            self.log_message.emit("[验收] 当前已有检查正在执行", "warn")
+            return
+        selected_keys = set(check_keys)
+        rows = [
+            index
+            for index, check in enumerate(self.CHECKS)
+            if check.key in selected_keys
+        ]
+        if not rows:
+            self.log_message.emit("[验收] 当前型号没有可复验的失败项", "warn")
+            return
+        self._start_acceptance_session()
+        self._pending = rows
+        self._set_running(True)
+        self.detail_view.clear()
+        self.tabs.setCurrentWidget(self.auto_tab)
+        self._append_detail(f"开始复验 {len(rows)} 个失败项...")
         self._run_next_check()
 
     def _run_next_check(self):
@@ -1202,6 +1232,8 @@ class AcceptanceTestPanel(QWidget):
             return
         session.finish(status)
         self._session_repository.finish(session)
+        if hasattr(self, "history_panel"):
+            self.history_panel.refresh()
 
     def cancel_checks(self):
         self._profile_generation += 1

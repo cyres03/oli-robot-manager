@@ -1,4 +1,4 @@
-# Sprint 3：建立自动验收会话存储
+# Sprint 3：建立自动验收历史与复验闭环
 
 - 周期：2026-08-26 至 2026-09-01
 - Product Owner / Developer / Reviewer：cyres03
@@ -7,13 +7,14 @@
 
 ## Sprint Goal
 
-每次自动验收都形成可追溯的本地会话，检查结果即时写入 SQLite，异常退出、用户停止或换机不会留下伪完成记录。
+验收人员能按当前产品查看历史会话和单项结果，并把旧会话的失败项组成新的复验会话，原结果保持不变。
 
 ## 承诺工作项
 
 | Issue | 类型 | 故事点 | 平台 | 状态 |
 |-------|------|--------|------|------|
 | #49 | Task | 5 | Cross-platform | Done |
+| #50 | Story | 3 | Cross-platform | Done |
 
 当前 WIP：0
 
@@ -26,30 +27,28 @@
 
 ## 验收重点
 
-- 运行全部或单项时创建会话
-- 每项 PASS/FAIL/N/A 即时写库并更新统计
-- 正常完成写入 completed
-- 用户停止、Profile 切换、应用退出或异常中断写入 cancelled
-- 详情进入数据库前脱敏
-- 重启后 Repository 可读取历史
+- 按当前产品 Profile 显示最近会话
+- 选择会话后显示全部单项结果和备注
+- 只有存在 FAIL 时启用“复验失败项”
+- 复验创建新会话，不覆盖旧结果
+- Profile 切换后重新筛选历史
 
 ## 本次不做
 
-- 历史记录 UI
 - JSON/CSV 导出
 - 飞书回写
 - 运动、校零、断电或 Backlash 新逻辑
 
 ## Sprint Review
 
-- Sprint Goal：达成
-- 自动化测试：160 passed
-- Windows：源码窗口启动，数据库迁移成功，无新崩溃日志
-- Windows/Linux CI：通过（PR #52）
+- Sprint Goal：本地实现完成，待 PR/CI
+- 自动化测试：163 passed
+- Windows：源码窗口响应正常，历史标签和真实数据库查询通过
+- Windows/Linux CI：待 PR 验证
 - 真机：仅验证现有自动验收只读项，不新增命令
 
 ## Retrospective
 
-- Keep：先拆分 8 点 Story，再启动一个 5 点 Task
-- Stop：把历史、导出和存储混在同一个 PR
-- Try：先确保数据可靠，再设计历史 UI
+- Keep：#49 数据层稳定后再接历史 UI
+- Stop：在历史 UI PR 中夹带导出功能
+- Try：历史闭环完成后再启动 #51 导出
