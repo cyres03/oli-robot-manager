@@ -2,14 +2,30 @@
 import os
 import shlex
 import socket
+import time
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from network.ssh_client import DEFAULT_SSH_KEY_PATH, SshClient
+from network.ssh_client import (
+    DEFAULT_SSH_KEY_PATH,
+    SshAuthenticationError,
+    SshClient,
+    SshRobotMismatchError,
+)
+
+
+_KEY_VERIFICATION_ATTEMPTS = 3
+_KEY_VERIFICATION_RETRY_DELAY_SECONDS = 0.25
 
 
 class SshKeyVerificationError(ConnectionError):
+    def __init__(self, message: str, error_code: str = "key_verification"):
+        super().__init__(message)
+        self.error_code = error_code
+
+
+class SshKeyWriteError(ConnectionError):
     pass
 
 
@@ -84,35 +100,64 @@ def install_operator_key(
         )
         quoted_key = shlex.quote(public_key)
         command = (
-            "umask 077; mkdir -p \"$HOME/.ssh\"; chmod 700 \"$HOME/.ssh\"; "
+            "set -eu; umask 077; chmod go-w \"$HOME\"; "
+            "mkdir -p \"$HOME/.ssh\"; chmod 700 \"$HOME/.ssh\"; "
             "touch \"$HOME/.ssh/authorized_keys\"; "
             "chmod 600 \"$HOME/.ssh/authorized_keys\"; "
             f"key={quoted_key}; "
             "grep -qxF \"$key\" \"$HOME/.ssh/authorized_keys\" || "
-            "printf '%s\\n' \"$key\" >> \"$HOME/.ssh/authorized_keys\""
+            "printf '\\n%s\\n' \"$key\" >> \"$HOME/.ssh/authorized_keys\"; "
+            "grep -qxF \"$key\" \"$HOME/.ssh/authorized_keys\""
         )
         result = client.execute(command, timeout=timeout)
         if result.exit_code != 0:
-            raise RuntimeError(
-                result.stderr.strip()
-                or f"写入 authorized_keys 失败(exit={result.exit_code})"
+            error_detail = " ".join(result.stderr.split())
+            if len(error_detail) > 240:
+                error_detail = error_detail[:237] + "..."
+            raise SshKeyWriteError(
+                "SSH 密码正确，但无法写入远端公钥。"
+                + (
+                    f"远端返回: {error_detail}"
+                    if error_detail
+                    else f"远端命令退出码: {result.exit_code}"
+                )
             )
     finally:
         client.close()
 
-    verifier = SshClient(
-        host,
-        username,
-        [],
-        key_path=key_path,
-        robot_id=robot_id,
-    )
-    try:
-        verifier.connect(timeout=timeout)
-    except Exception as error:
-        raise SshKeyVerificationError(
-            "SSH 密码已验证且公钥已写入，但项目密钥复验失败: "
-            f"{error}"
-        ) from error
-    finally:
-        verifier.close()
+    last_error: Exception | None = None
+    for attempt in range(_KEY_VERIFICATION_ATTEMPTS):
+        verifier = SshClient(
+            host,
+            username,
+            [],
+            key_path=key_path,
+            robot_id=robot_id,
+        )
+        try:
+            verifier.connect(timeout=min(timeout, 5))
+            return
+        except SshAuthenticationError as error:
+            raise SshKeyVerificationError(
+                "SSH 密码正确，但主控拒绝刚写入的项目公钥。"
+                "请重新授权；若仍失败，请检查远端 .ssh 目录所有权。",
+                "key_rejected",
+            ) from error
+        except SshRobotMismatchError as error:
+            raise SshKeyVerificationError(
+                "SSH 密码正确且公钥已写入，但复验时机器人连接已切换。"
+                "请确认当前机器人后重试。",
+                "robot_mismatch",
+            ) from error
+        except Exception as error:
+            last_error = error
+            if attempt + 1 < _KEY_VERIFICATION_ATTEMPTS:
+                time.sleep(_KEY_VERIFICATION_RETRY_DELAY_SECONDS)
+        finally:
+            verifier.close()
+
+    raise SshKeyVerificationError(
+        "SSH 密码正确且公钥已写入，但无法建立新的复验连接。"
+        "请确认电脑仍连接机器人网络后重试。",
+        "key_connection",
+    ) from last_error

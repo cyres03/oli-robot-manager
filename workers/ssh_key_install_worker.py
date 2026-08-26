@@ -3,7 +3,11 @@ import paramiko
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from network.ssh_client import SshAuthenticationError
-from network.ssh_key_manager import SshKeyVerificationError, install_operator_key
+from network.ssh_key_manager import (
+    SshKeyVerificationError,
+    SshKeyWriteError,
+    install_operator_key,
+)
 from services import credential_store
 
 
@@ -53,7 +57,13 @@ class SshKeyInstallWorker(QThread):
             self.completed.emit(
                 False,
                 str(error),
-                "key_verification",
+                error.error_code,
+            )
+        except SshKeyWriteError as error:
+            self.completed.emit(
+                False,
+                str(error),
+                "key_write",
             )
         except (paramiko.AuthenticationException, SshAuthenticationError):
             self.completed.emit(
