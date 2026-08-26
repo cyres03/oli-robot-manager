@@ -4,6 +4,7 @@ Calibration service — two types:
   2. Backlash test (launch external backlash-console-v0.5.exe)
 """
 import os
+import re
 import subprocess
 import sys
 import time
@@ -28,6 +29,66 @@ BACKLASH_LEGACY_PAYLOAD_PATH = os.path.join(
 BACKLASH_RESULT_DIR = os.path.join(
     os.path.expanduser("~"), "AppData", "Local", "OliRobotManager", "backlash", "results"
 )
+MISSION_ENGINE_SWITCH_SERVICE = "/mission_engine/switch_state"
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_MROSSERVICE_LOG_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2} .* [A-Z]/mrosservice\(\d+/\d+\):"
+)
+_MROS_ENV = (
+    "export LD_LIBRARY_PATH=/opt/limx/install/lib; "
+    "export PATH=/opt/limx/install/bin:$PATH; "
+    "export MROS_IP_LIST=10.192.1.x; "
+    "export MROS_ETC_PATH=/opt/limx/install/etc; "
+    "export MROS_BIN_PATH=/opt/limx/install/bin; "
+    "export MROS_LIB_PATH=/opt/limx/install/lib; "
+    "export MROS_PKG_PATH=/opt/limx/install; "
+    "export MROS_SIM_TIME=0; "
+)
+
+
+def _mros_command(command: str) -> str:
+    return _MROS_ENV + command
+
+
+def _mros_output(stdout: str, stderr: str) -> str:
+    return "\n".join(part for part in (stdout.strip(), stderr.strip()) if part)
+
+
+def _mros_payload_lines(output: str) -> list[str]:
+    lines = []
+    for raw_line in _ANSI_ESCAPE_RE.sub("", output).splitlines():
+        line = raw_line.strip()
+        if not line or line == "Wait a moment..." or _MROSSERVICE_LOG_RE.match(line):
+            continue
+        lines.append(line)
+    return lines
+
+
+def _mros_service_names(output: str) -> set[str]:
+    return {
+        match.group(1)
+        for line in _mros_payload_lines(output)
+        if (match := re.match(r"^\*\s+(\S+)\s+\[type:", line))
+    }
+
+
+def _mros_call_succeeded(output: str) -> bool:
+    payload = "\n".join(_mros_payload_lines(output))
+    if re.search(r"cannot find service|\berror\b|\bfailed\b", payload, re.IGNORECASE):
+        return False
+    return bool(
+        re.search(
+            r"(?:['\"]?result['\"]?\s*:\s*['\"]success['\"]|\bsuccess\b)",
+            payload,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _summarize_mros_output(output: str, max_lines: int = 12) -> str:
+    lines = _mros_payload_lines(output)
+    summary = "\n".join(lines[-max_lines:])
+    return summary[:1200] + ("..." if len(summary) > 1200 else "")
 
 
 def _resource_path(relative_path: str) -> str:
@@ -62,44 +123,91 @@ class MissionEngineCalibrateWorker(QThread):
             )
             return
 
-        led_detail = ""
-        try:
-            led_result = RobotClient(
-                ROBOT_CONFIG.websocket_url, self.robot_id
-            ).enable_led_control(False)
-            led_detail = f"SDK LED 控制已关闭: {led_result}"
-        except Exception as error:
-            led_detail = f"SDK LED 控制关闭失败，继续尝试校零: {error}"
-
         client = SshClient(
             self.host,
             self.username,
             list(ROBOT_CONFIG.main_control_passwords),
             robot_id=self.robot_id,
         )
+        robot_client: RobotClient | None = None
+        led_disabled = False
+        led_restore_required = False
         try:
             client.connect(timeout=8)
-            command = (
-                "export LD_LIBRARY_PATH=/opt/limx/install/lib; "
-                "export PATH=/opt/limx/install/bin:$PATH; "
-                "export MROS_IP_LIST=10.192.1.x; "
-                "export MROS_ETC_PATH=/opt/limx/install/etc; "
-                "export MROS_BIN_PATH=/opt/limx/install/bin; "
-                "export MROS_LIB_PATH=/opt/limx/install/lib; "
-                "export MROS_PKG_PATH=/opt/limx/install; "
-                "export MROS_SIM_TIME=0; "
+            service_result = client.execute(
+                _mros_command("/opt/limx/install/bin/mrosservice list"),
+                timeout=12,
+            )
+            service_output = _mros_output(
+                service_result.stdout,
+                service_result.stderr,
+            )
+            if service_result.exit_code != 0:
+                detail = _summarize_mros_output(service_output) or "未返回服务列表"
+                self.finished.emit(
+                    False,
+                    f"MissionEngine 接口预检失败(exit={service_result.exit_code})，"
+                    f"未执行校零，也未关闭 SDK LED。\n{detail}",
+                )
+                return
+            if MISSION_ENGINE_SWITCH_SERVICE not in _mros_service_names(service_output):
+                self.finished.emit(
+                    False,
+                    "当前固件未提供完整校零接口 "
+                    f"{MISSION_ENGINE_SWITCH_SERVICE}，未执行校零，也未关闭 SDK LED。\n"
+                    "检测到 /joint/calibration 仅是 MissionEngine 内部步骤；"
+                    "为避免绕过停能力、阻尼和零力矩保护，软件不会直接调用。\n"
+                    "请使用实体遥控器 L1+R1 执行完整校零。",
+                )
+                return
+
+            robot_client = RobotClient(ROBOT_CONFIG.websocket_url, self.robot_id)
+            try:
+                led_restore_required = True
+                led_result = robot_client.enable_led_control(False)
+                led_disabled = led_result.get("result") == "success"
+                led_detail = (
+                    f"SDK LED 控制已关闭: {led_result}"
+                    if led_disabled
+                    else f"SDK LED 控制未关闭，继续尝试校零: {led_result}"
+                )
+            except Exception as error:
+                led_detail = f"SDK LED 控制关闭失败，继续尝试校零: {error}"
+
+            command = _mros_command(
                 "/opt/limx/install/bin/mrosservice call /mission_engine/switch_state "
                 "std_srvs/SetString '{\"data\":\"Calibration\"}'"
             )
             result = client.execute(command, timeout=30)
-            output = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
+            output = _mros_output(result.stdout, result.stderr)
+            summary = _summarize_mros_output(output) or "未返回业务响应"
             if result.exit_code != 0:
-                self.finished.emit(False, f"{led_detail}\nMissionEngine 调用失败(exit={result.exit_code}): {output}")
+                restore_detail = self._restore_led_control(
+                    robot_client,
+                    led_restore_required,
+                )
+                self.finished.emit(
+                    False,
+                    f"{led_detail}\nMissionEngine 调用失败(exit={result.exit_code}): "
+                    f"{summary}{restore_detail}",
+                )
                 return
-            if "success" not in output.lower():
-                self.finished.emit(False, f"{led_detail}\nMissionEngine 未返回 success: {output}")
+            if not _mros_call_succeeded(output):
+                restore_detail = self._restore_led_control(
+                    robot_client,
+                    led_restore_required,
+                )
+                self.finished.emit(
+                    False,
+                    f"{led_detail}\nMissionEngine 未返回成功响应: "
+                    f"{summary}{restore_detail}",
+                )
                 return
-            self.finished.emit(True, f"{led_detail}\n已进入 MissionEngine Calibration，机器人应显示校零中并使用蓝色灯语。\n{output}")
+            self.finished.emit(
+                True,
+                f"{led_detail}\n已进入 MissionEngine Calibration，"
+                f"机器人应显示校零中并使用蓝色灯语。\n{summary}",
+            )
         except SshAuthenticationError:
             self.authentication_required.emit(
                 self.host,
@@ -110,9 +218,27 @@ class MissionEngineCalibrateWorker(QThread):
         except SshRobotMismatchError as error:
             self.finished.emit(False, str(error))
         except Exception as error:
-            self.finished.emit(False, f"{led_detail}\n{error}")
+            restore_detail = (
+                self._restore_led_control(robot_client, led_restore_required)
+                if robot_client is not None
+                else ""
+            )
+            self.finished.emit(False, f"{error}{restore_detail}")
         finally:
             client.close()
+
+    @staticmethod
+    def _restore_led_control(
+        robot_client: RobotClient,
+        led_restore_required: bool,
+    ) -> str:
+        if not led_restore_required:
+            return ""
+        try:
+            result = robot_client.enable_led_control(True)
+            return f"\nSDK LED 控制已恢复: {result}"
+        except Exception as error:
+            return f"\nSDK LED 控制恢复失败: {error}"
 
 
 class BacklashConsoleWorker(QThread):

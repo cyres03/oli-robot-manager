@@ -45,8 +45,10 @@ class CalibratePanel(QWidget):
         ws_group.setStyleSheet(group_style)
         ws_layout = QVBoxLayout(ws_group)
 
-        ws_info = QLabel("通过 SSH 调用 mission_engine/switch_state，走遥控器 L1+R1 相同的完整校零链路。\n"
-                  "触发前会关闭 SDK LED 控制，避免白灯覆盖机器人默认蓝色校零灯语。")
+        ws_info = QLabel(
+            "执行前会探测当前固件的 MissionEngine 完整校零接口。\n"
+            "接口未开放时不会绕过安全状态机直调关节校零，请使用实体遥控器 L1+R1。"
+        )
         ws_info.setStyleSheet("color: #4E5969; font-size: 12px; background: transparent;")
         ws_layout.addWidget(ws_info)
 
