@@ -2,13 +2,13 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QScrollArea, QSlider, QTabWidget, QGridLayout, QFrame,
-    QMessageBox,
 )
 from PyQt6.QtCore import Qt, QTimer
 from models.robot_profile import RobotProfile
 from services.dance_service import DanceService
 from ui.widgets.dance_card import DanceCard
 from ui.widgets.sequencer_editor import SequencerEditor
+from ui.dialogs.message_dialog import AppMessageBox
 
 
 DANCE_DISPLAY_ORDER = [
@@ -257,7 +257,7 @@ class DanceLibraryPanel(QWidget):
 
     def _on_dance_target_completed(self, name: str, count: int, robot_accid: str):
         display_name = self._dance_cards[name].dance_name if name in self._dance_cards else name
-        QMessageBox.information(
+        AppMessageBox.information(
             self,
             "舞蹈测试完成",
             f"{robot_accid}\n{display_name} 已测试到第 {count} 遍。",
