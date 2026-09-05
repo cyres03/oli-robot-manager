@@ -20,18 +20,20 @@ class HealthCheckPanel(QWidget):
         title.setStyleSheet("font-size: 20px; font-weight: 700; color: #1D2129; border: none; background: transparent;")
         layout.addWidget(title)
 
-        desc = QLabel("一键检测: WiFi连接、CPU核心数、系统时间、IMU频率")
+        desc = QLabel("只读检测: WiFi连接、CPU核心数、系统时间、IMU频率")
         desc.setStyleSheet("color: #86909C; font-size: 13px; border: none; background: transparent;")
         layout.addWidget(desc)
 
         ctrl_bar = QHBoxLayout()
-        self.run_btn = QPushButton("运行完整诊断")
+        self.run_btn = QPushButton("运行只读健康检查")
         self.run_btn.setStyleSheet(
             "QPushButton { background: #6C5CE7; color: #fff; padding: 12px 24px; "
             "border-radius: 6px; font-size: 15px; font-weight: bold; border: none; }"
             "QPushButton:hover { background: #5A4BD1; }"
             "QPushButton:disabled { background: #C9CDD4; }")
-        self.run_btn.clicked.connect(self._service.run_full_diagnostic)
+        self.run_btn.clicked.connect(
+            lambda: self._service.run_full_diagnostic(allow_repairs=False)
+        )
         ctrl_bar.addWidget(self.run_btn)
         ctrl_bar.addStretch()
         layout.addLayout(ctrl_bar)

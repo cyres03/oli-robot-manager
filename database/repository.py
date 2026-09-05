@@ -5,6 +5,7 @@ from models.acceptance import (
     AcceptanceItemResult,
     AcceptanceItemStatus,
     AcceptanceSession,
+    AcceptanceSessionPurpose,
     AcceptanceSessionStatus,
 )
 
@@ -124,9 +125,11 @@ class AcceptanceSessionRepository:
         conn.execute(
             """INSERT INTO acceptance_sessions
                (session_id, robot_accid, profile_key, operator_name,
-                software_version, started_at, completed_at, status,
+                software_version, started_at, purpose, problem_description,
+                robot_firmware, robot_versions_json, package_path,
+                completed_at, status,
                 pass_count, fail_count, not_applicable_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 session.session_id,
                 session.robot_accid,
@@ -134,6 +137,11 @@ class AcceptanceSessionRepository:
                 session.operator_name,
                 session.software_version,
                 session.started_at,
+                session.purpose.value,
+                session.problem_description,
+                session.robot_firmware,
+                json.dumps(session.robot_versions, ensure_ascii=False),
+                session.package_path,
                 session.completed_at,
                 session.status.value,
                 session.pass_count,
@@ -220,6 +228,31 @@ class AcceptanceSessionRepository:
         conn.commit()
         conn.close()
 
+    def save_package_path(self, session_id: str, package_path: str):
+        conn = self._db.get_connection()
+        conn.execute(
+            "UPDATE acceptance_sessions SET package_path=? WHERE session_id=?",
+            (package_path, session_id),
+        )
+        conn.commit()
+        conn.close()
+
+    def update_diagnostic_metadata(self, session: AcceptanceSession):
+        conn = self._db.get_connection()
+        conn.execute(
+            """UPDATE acceptance_sessions SET
+               problem_description=?, robot_firmware=?, robot_versions_json=?
+               WHERE session_id=?""",
+            (
+                session.problem_description,
+                session.robot_firmware,
+                json.dumps(session.robot_versions, ensure_ascii=False),
+                session.session_id,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
     def get(self, session_id: str) -> AcceptanceSession | None:
         conn = self._db.get_connection()
         row = conn.execute(
@@ -272,6 +305,11 @@ class AcceptanceSessionRepository:
             operator_name=session_row["operator_name"],
             software_version=session_row["software_version"],
             started_at=session_row["started_at"],
+            purpose=AcceptanceSessionPurpose(session_row["purpose"]),
+            problem_description=session_row["problem_description"],
+            robot_firmware=session_row["robot_firmware"],
+            robot_versions=_json_object(session_row["robot_versions_json"]),
+            package_path=session_row["package_path"],
             completed_at=session_row["completed_at"],
             status=AcceptanceSessionStatus(session_row["status"]),
             pass_count=session_row["pass_count"],
@@ -291,6 +329,16 @@ class AcceptanceSessionRepository:
                 for item in item_rows
             ],
         )
+
+
+def _json_object(raw_value: str | None) -> dict[str, str]:
+    try:
+        value = json.loads(raw_value or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): str(item) for key, item in value.items()}
 
 
 class SettingsRepository:
