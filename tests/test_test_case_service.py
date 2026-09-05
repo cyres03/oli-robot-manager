@@ -73,6 +73,44 @@ def test_service_filters_cases_and_uses_profile_node(tmp_path, monkeypatch):
     assert worker.kwargs["case"].target_role == "speech_vision"
 
 
+def test_service_runs_builtin_fatigue_without_ssh_credentials(tmp_path, monkeypatch):
+    import services.managed_test_service as module
+
+    service = _service(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "HandFatigueWorker", FakeWorker)
+    service.apply_context(L04_PROFILE, "HU_L04_01_090", "v1")
+
+    service.run_case("luna-hand-fatigue", approved=True)
+
+    worker = FakeWorker.instances[-1]
+    assert worker.kwargs["profile"] is L04_PROFILE
+    assert worker.kwargs["accid"] == "HU_L04_01_090"
+    assert worker.kwargs["case"].source.value == "builtin_runner"
+    assert "passwords" not in worker.kwargs
+    assert "local_script_path" not in worker.kwargs
+
+
+def test_service_requires_approval_before_starting_hand_fatigue(tmp_path, monkeypatch):
+    service = _service(tmp_path, monkeypatch)
+    service.apply_context(L04_PROFILE, "HU_L04_01_090", "v1")
+    errors = []
+    service.error_occurred.connect(errors.append)
+
+    service.run_case("luna-hand-fatigue")
+
+    assert FakeWorker.instances == []
+    assert "hardware_control" in errors[-1]
+
+
+def test_service_exposes_only_oli_hand_fatigue_for_oli_profile(tmp_path, monkeypatch):
+    service = _service(tmp_path, monkeypatch)
+    service.apply_context(OLI_PROFILE, "HU_D04_01_099", "v2")
+
+    assert [case.case_id for case in service.available_cases()] == [
+        "oli-hand-fatigue",
+    ]
+
+
 def test_service_overrides_bundled_script_arguments_safely(tmp_path, monkeypatch):
     service = _service(tmp_path, monkeypatch)
     service.apply_context(L04_PROFILE, "HU_L04_01_090", "v1")

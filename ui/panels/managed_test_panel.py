@@ -8,18 +8,25 @@ from PyQt6.QtGui import QColor, QBrush
 from PyQt6.QtWidgets import (
     QFileDialog,
     QComboBox,
+    QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from models.managed_case import TestCaseDefinition, TestRunResult, TestSource
+from models.managed_case import (
+    HAND_FATIGUE_RUNNER,
+    TestCaseDefinition,
+    TestRunResult,
+    TestSource,
+)
 from services.managed_test_service import TestCaseService
 
 
@@ -98,7 +105,7 @@ class TestCasePanel(QWidget):
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(10)
 
-        title = QLabel("Luna 测试用例")
+        title = QLabel("机器人测试用例")
         title.setObjectName("pageTitle")
         layout.addWidget(title)
         self.context_label = QLabel("选择由当前机器人 Profile 提供的节点测试用例")
@@ -128,6 +135,31 @@ class TestCasePanel(QWidget):
         self.status_label.setObjectName("runStatus")
         toolbar.addWidget(self.status_label)
         layout.addLayout(toolbar)
+
+        self.runner_options = QWidget()
+        runner_options_layout = QHBoxLayout(self.runner_options)
+        runner_options_layout.setContentsMargins(0, 0, 0, 0)
+        runner_options_layout.setSpacing(8)
+        runner_options_layout.addWidget(QLabel("灵巧手测试参数"))
+        runner_options_layout.addWidget(QLabel("时长"))
+        self.duration_hours = QDoubleSpinBox()
+        self.duration_hours.setDecimals(2)
+        self.duration_hours.setRange(0.01, 2.0)
+        self.duration_hours.setSingleStep(0.1)
+        self.duration_hours.setSuffix(" h")
+        self.duration_hours.setValue(2.0)
+        self.duration_hours.setToolTip("疲劳测试持续时长")
+        runner_options_layout.addWidget(self.duration_hours)
+        runner_options_layout.addWidget(QLabel("每阶段循环"))
+        self.cycles_per_phase = QSpinBox()
+        self.cycles_per_phase.setRange(1, 100)
+        self.cycles_per_phase.setSuffix(" 次")
+        self.cycles_per_phase.setValue(10)
+        self.cycles_per_phase.setToolTip("六个阶段中每阶段的开合循环次数")
+        runner_options_layout.addWidget(self.cycles_per_phase)
+        runner_options_layout.addStretch()
+        self.runner_options.setVisible(False)
+        layout.addWidget(self.runner_options)
 
         self.table = QTableWidget(0, 6)
         self.table.setObjectName("testCaseTable")
@@ -166,6 +198,7 @@ class TestCasePanel(QWidget):
         self.node_filter.currentIndexChanged.connect(self._apply_filters)
         self.category_filter.currentIndexChanged.connect(self._apply_filters)
         self.risk_filter.currentIndexChanged.connect(self._apply_filters)
+        self.table.itemSelectionChanged.connect(self._sync_runner_options)
 
     def _populate_cases(self, cases: list[TestCaseDefinition]):
         self._cases = {case.case_id: case for case in cases}
@@ -243,6 +276,7 @@ class TestCasePanel(QWidget):
             )
         else:
             self.context_label.setText("没有符合筛选条件的测试用例")
+        self._sync_runner_options()
         self.run_btn.setEnabled(bool(cases))
 
     def _selected_case(self) -> TestCaseDefinition | None:
@@ -252,6 +286,24 @@ class TestCasePanel(QWidget):
         item = self.table.item(row, 1)
         case_id = item.data(Qt.ItemDataRole.UserRole) if item else None
         return self._cases.get(str(case_id))
+
+    def _sync_runner_options(self):
+        case = self._selected_case()
+        is_hand_fatigue = bool(case and case.runner == HAND_FATIGUE_RUNNER)
+        self.runner_options.setVisible(is_hand_fatigue)
+        if not is_hand_fatigue or case is None:
+            return
+        maximum_hours = max(
+            0.01,
+            int((case.timeout_seconds - 30) / 36) / 100,
+        )
+        self.duration_hours.setMaximum(maximum_hours)
+        if len(case.arguments) == 2:
+            try:
+                self.duration_hours.setValue(float(case.arguments[0]) / 3600)
+                self.cycles_per_phase.setValue(int(case.arguments[1]))
+            except ValueError:
+                pass
 
     def _run_selected(self):
         case = self._selected_case()
@@ -274,8 +326,20 @@ class TestCasePanel(QWidget):
                 self.status_label.setText("未选择测试脚本")
                 return
             local_script = Path(selected)
+        arguments_override = None
+        if case.runner == HAND_FATIGUE_RUNNER:
+            duration_seconds = round(self.duration_hours.value() * 3600)
+            arguments_override = (
+                str(duration_seconds),
+                str(self.cycles_per_phase.value()),
+            )
         self.output.clear()
-        self._service.run_case(case.case_id, approved, local_script)
+        self._service.run_case(
+            case.case_id,
+            approved,
+            local_script,
+            arguments_override,
+        )
 
     def _confirm_execution(self, case: TestCaseDefinition) -> bool:
         reasons = "、".join(
@@ -286,9 +350,13 @@ class TestCasePanel(QWidget):
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle("确认测试")
         box.setText(case.name)
-        box.setInformativeText(
-            f"确认原因：{reasons}\n\n确认目标机器人和现场安全后再继续。"
-        )
+        detail = f"确认原因：{reasons}\n\n确认目标机器人和现场安全后再继续。"
+        if case.runner == HAND_FATIGUE_RUNNER:
+            detail += (
+                "\n\n双手将在测试期间持续开合。请移除手部周围物体，"
+                "保持急停可用，并全程留人看护。"
+            )
+        box.setInformativeText(detail)
         box.setStandardButtons(
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )

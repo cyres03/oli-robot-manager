@@ -4,6 +4,8 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QMessageBox
 
 from models.managed_case import (
+    HAND_FATIGUE_CAPABILITY,
+    HAND_FATIGUE_RUNNER,
     TestCaseDefinition as CaseDefinition,
     TestRunResult as RunResult,
     TestRunStatus as RunStatus,
@@ -29,8 +31,16 @@ class FakeService(QObject):
     def available_cases(self):
         return self.cases
 
-    def run_case(self, case_id, approved=False, local_script_path=None):
-        self.runs.append((case_id, approved, local_script_path))
+    def run_case(
+        self,
+        case_id,
+        approved=False,
+        local_script_path=None,
+        arguments_override=None,
+    ):
+        self.runs.append(
+            (case_id, approved, local_script_path, arguments_override)
+        )
         case = next(case for case in self.cases if case.case_id == case_id)
         self.run_started.emit(case)
 
@@ -51,6 +61,22 @@ def _case():
     )
 
 
+def _fatigue_case():
+    return CaseDefinition(
+        case_id="luna-hand-fatigue",
+        name="双灵巧手疲劳测试",
+        product_key="hu_l04_01",
+        target_role="main",
+        source=Source.BUILTIN_RUNNER,
+        category="灵巧手",
+        timeout_seconds=7500,
+        runner=HAND_FATIGUE_RUNNER,
+        required_capability=HAND_FATIGUE_CAPABILITY,
+        arguments=("7200", "10"),
+        risks=frozenset({Risk.HARDWARE_CONTROL}),
+    )
+
+
 def test_panel_lists_and_runs_selected_case(qtbot, monkeypatch):
     service = FakeService([_case()])
     panel = ManagedTestCasePanel(service)
@@ -63,7 +89,7 @@ def test_panel_lists_and_runs_selected_case(qtbot, monkeypatch):
 
     panel._run_selected()
 
-    assert service.runs == [("luna-main-snapshot", True, None)]
+    assert service.runs == [("luna-main-snapshot", True, None, None)]
     assert panel.cancel_btn.isEnabled()
     assert panel.table.item(0, 5).text() == "执行中"
 
@@ -90,6 +116,27 @@ def test_confirmation_dialog_uses_readable_chinese_buttons(qtbot, monkeypatch):
     assert captured["confirm"] == "确认执行"
     assert captured["cancel"] == "取消"
     assert "background: #FFFFFF" in captured["style"]
+
+
+def test_hand_fatigue_confirmation_describes_motion_and_emergency_stop(
+    qtbot,
+    monkeypatch,
+):
+    case = _fatigue_case()
+    panel = ManagedTestCasePanel(FakeService([case]))
+    qtbot.addWidget(panel)
+    captured = {}
+
+    def capture_dialog(box):
+        captured["detail"] = box.informativeText()
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(QMessageBox, "exec", capture_dialog)
+
+    assert panel._confirm_execution(case) is False
+    assert "双手将在测试期间持续开合" in captured["detail"]
+    assert "保持急停可用" in captured["detail"]
+    assert "全程留人看护" in captured["detail"]
 
 
 def test_panel_streams_output_and_renders_result(qtbot):
@@ -178,3 +225,24 @@ def test_panel_filters_by_node_category_and_risk(qtbot):
     panel.risk_filter.setCurrentIndex(panel.risk_filter.findData("__read_only__"))
     assert panel.table.rowCount() == 1
     assert panel.table.item(0, 1).text() == "Luna 主控只读快照"
+
+
+def test_panel_configures_builtin_hand_fatigue_without_file_picker(qtbot, monkeypatch):
+    case = _fatigue_case()
+    service = FakeService([case])
+    panel = ManagedTestCasePanel(service)
+    qtbot.addWidget(panel)
+    monkeypatch.setattr(panel, "_confirm_execution", lambda _case: True)
+
+    assert panel.runner_options.isHidden() is False
+    assert panel.duration_hours.value() == 2.0
+    assert panel.duration_hours.maximum() == 2.07
+    assert panel.cycles_per_phase.value() == 10
+    panel.duration_hours.setValue(0.5)
+    panel.cycles_per_phase.setValue(3)
+
+    panel._run_selected()
+
+    assert service.runs == [
+        ("luna-hand-fatigue", True, None, ("1800", "3")),
+    ]

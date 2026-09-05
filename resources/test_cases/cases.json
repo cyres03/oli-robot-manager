@@ -31,6 +31,32 @@
       "command": "printf 'node='; hostname; printf 'cores='; nproc; printf 'services='; ps -eo comm= | grep -E 'AudioDeviceNode|speech_playback|GestureMrosNode|mroswebvideo' | sort -u | paste -sd, - || true",
       "expected_exit_codes": [0],
       "expected_stdout_pattern": "node=.*cores=[0-9]+"
+    },
+    {
+      "id": "luna-hand-fatigue",
+      "name": "双灵巧手疲劳测试",
+      "product_key": "hu_l04_01",
+      "target_role": "main",
+      "source": "builtin_runner",
+      "runner": "brainco_hand_fatigue",
+      "required_capability": "hand_fatigue",
+      "category": "灵巧手",
+      "timeout_seconds": 7500,
+      "arguments": ["7200", "10"],
+      "risks": ["hardware_control"]
+    },
+    {
+      "id": "oli-hand-fatigue",
+      "name": "双灵巧手疲劳测试",
+      "product_key": "oli",
+      "target_role": "main",
+      "source": "builtin_runner",
+      "runner": "brainco_hand_fatigue",
+      "required_capability": "hand_fatigue",
+      "category": "灵巧手",
+      "timeout_seconds": 7500,
+      "arguments": ["7200", "10"],
+      "risks": ["hardware_control"]
     }
   ]
 }
