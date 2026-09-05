@@ -9,6 +9,7 @@ from ui.panels.acceptance_test_panel import (
     BEIJING_TIMEZONE,
     AcceptanceTestPanel,
     build_acceptance_checks,
+    build_diagnostic_checks,
 )
 
 
@@ -31,6 +32,32 @@ def test_oli_checks_preserve_perception_topology_and_mcp():
     assert _check(checks, "companion_ssh").tool == "guest@10.192.1.3"
     assert _check(checks, "mcp").kind == "http"
     assert "lsusb" in _check(checks, "camera").command
+
+
+def test_diagnostic_checks_add_identity_status_and_mros_without_writes():
+    checks = build_diagnostic_checks(OLI_PROFILE)
+
+    assert checks[0].key == "robot_info"
+    assert checks[-1].key == "mros_services"
+    assert "mrosservice list" in checks[-1].command
+    all_commands = "\n".join(check.command for check in checks)
+    for write_command in ("rm ", "reboot", "date -s", "set-timezone"):
+        assert write_command not in all_commands
+
+
+def test_mros_snapshot_counts_service_entries(qtbot):
+    panel = AcceptanceTestPanel(profile=OLI_PROFILE)
+    qtbot.addWidget(panel)
+    check = _check(build_diagnostic_checks(OLI_PROFILE), "mros_services")
+
+    passed, summary = panel._evaluate_ssh_output(
+        check,
+        "\x1b[32m* /joint/calibration [type: std_srvs/Trigger]\x1b[0m\n"
+        "* /mission_engine/switch_state [type: std_srvs/SetString]\n",
+    )
+
+    assert passed is True
+    assert summary == "读取到 2 个 mROS 服务"
 
 
 def test_l04_panel_reports_mcp_as_not_applicable(qtbot):
@@ -106,6 +133,37 @@ def test_profile_switch_rejects_late_acceptance_callback(qtbot):
     )
 
     assert panel.version_labels["software_version"].text() == "-"
+
+
+def test_version_refresh_rejects_mismatched_robot_identity(qtbot, monkeypatch):
+    panel = AcceptanceTestPanel(profile=OLI_PROFILE)
+    qtbot.addWidget(panel)
+    monkeypatch.setattr(ROBOT_CONFIG, "ws_accid", "HU_D04_01_075")
+
+    panel._on_robot_info_refresh_done(
+        {
+            "sn": "HU_D04_01_999",
+            "software_version": "wrong-robot-version",
+        },
+        "HU_D04_01_075",
+    )
+
+    assert panel.version_labels["software_version"].text() == "-"
+    assert "拒绝导入版本信息" in panel.detail_view.toPlainText()
+
+
+def test_version_refresh_rejects_response_without_robot_identity(qtbot, monkeypatch):
+    panel = AcceptanceTestPanel(profile=OLI_PROFILE)
+    qtbot.addWidget(panel)
+    monkeypatch.setattr(ROBOT_CONFIG, "ws_accid", "HU_D04_01_075")
+
+    panel._on_robot_info_refresh_done(
+        {"software_version": "unverified-version"},
+        "HU_D04_01_075",
+    )
+
+    assert panel.version_labels["software_version"].text() == "-"
+    assert "无法识别" in panel.detail_view.toPlainText()
 
 
 def test_profile_switch_rejects_late_beijing_time_callback(qtbot, monkeypatch):

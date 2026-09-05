@@ -42,12 +42,14 @@ class HealthCheckService(QObject):
         self._retry_count = 0
         self._workers: list = []
         self._ssh_retry = None
+        self._allow_repairs = False
 
-    def run_full_diagnostic(self):
+    def run_full_diagnostic(self, allow_repairs: bool = False):
         self._result = HealthCheckResult(started_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self._retry_count = 0
         self._workers.clear()
         self._ssh_retry = None
+        self._allow_repairs = bool(allow_repairs)
         self._transition_to(HealthCheckState.CONNECTING_WIFI)
         self._check_wifi()
 
@@ -122,6 +124,7 @@ class HealthCheckService(QObject):
             self._check_camera()
         elif (
             cores > 0
+            and self._allow_repairs
             and ROBOT_CONFIG.allow_cpu_repair
             and self._retry_count < ROBOT_CONFIG.cpu_fix_max_retries
         ):
@@ -328,7 +331,7 @@ class HealthCheckService(QObject):
             "diff_seconds": diff,
         })
 
-        if not passed and ROBOT_CONFIG.allow_time_repair:
+        if not passed and self._allow_repairs and ROBOT_CONFIG.allow_time_repair:
             self._transition_to(HealthCheckState.FIXING_TIME)
             self._fix_time()
         else:

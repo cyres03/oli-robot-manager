@@ -1,5 +1,6 @@
 """Acceptance testing workbench for WiFi/SSH-based after-sales checks."""
 import getpass
+import json
 import os
 from pathlib import Path
 import re
@@ -10,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from statistics import median
-from urllib.parse import urljoin
+from urllib.parse import quote
 
 import httpx
 from PyQt6.QtCore import QThread, Qt, pyqtSignal
@@ -21,6 +22,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -30,17 +32,20 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from config import ROBOT_CONFIG
+from config import APP_CONFIG, ROBOT_CONFIG
 from database.repository import AcceptanceSessionRepository
 from models.acceptance import (
     AcceptanceItemResult,
     AcceptanceItemStatus,
     AcceptanceSession,
+    AcceptanceSessionPurpose,
     AcceptanceSessionStatus,
+    redact_acceptance_detail,
 )
-from models.robot_profile import OLI_PROFILE, RobotProfile
+from models.robot_profile import OLI_PROFILE, RobotProfile, extract_robot_accid
 from network.wifi_manager import WifiManager
 from services import credential_store
+from services.diagnostic_package_service import export_diagnostic_package
 from ui.panels.log_analyzer_panel import LogAnalyzerPanel
 from ui.panels.power_cycle_panel import PowerCyclePanel
 from workers.ssh_worker import SshWorker
@@ -61,6 +66,19 @@ PORTAL_PAGE_MARKERS = (
     ("LimX Robot Manager", "Robot Manager"),
     ("LimX Studio", "LimX Studio"),
     ("get_robot_info", "机器人信息 API"),
+)
+SAFE_LOG_NAME = re.compile(r"[^<>:\"/\\|?*\x00-\x1f]+\.log(?:\.active)?", re.IGNORECASE)
+MROS_SERVICE_LIST_COMMAND = (
+    "export LD_LIBRARY_PATH=/opt/limx/install/lib; "
+    "export PATH=/opt/limx/install/bin:$PATH; "
+    "export MROS_IP_LIST=10.192.1.x; "
+    "export MROS_ETC_PATH=/opt/limx/install/etc; "
+    "export MROS_BIN_PATH=/opt/limx/install/bin; "
+    "export MROS_LIB_PATH=/opt/limx/install/lib; "
+    "export MROS_PKG_PATH=/opt/limx/install; "
+    "export MROS_SIM_TIME=0; "
+    "timeout --signal=TERM --kill-after=2s 10s "
+    "/opt/limx/install/bin/mrosservice list"
 )
 
 
@@ -171,6 +189,14 @@ class AcceptanceCheck:
     url: str = ""
 
 
+@dataclass(frozen=True)
+class AcceptanceRunContext:
+    generation: int
+    session_id: str
+    profile_key: str
+    robot_accid: str
+
+
 def build_acceptance_checks(profile: RobotProfile) -> list[AcceptanceCheck]:
     main = profile.main_node
     companion = profile.companion_nodes[0] if profile.companion_nodes else None
@@ -235,6 +261,30 @@ def build_acceptance_checks(profile: RobotProfile) -> list[AcceptanceCheck]:
     return [checks[key] for key in profile.acceptance_check_keys if key in checks]
 
 
+def build_diagnostic_checks(profile: RobotProfile) -> list[AcceptanceCheck]:
+    portal = profile.service("portal")
+    return [
+        AcceptanceCheck(
+            "robot_info",
+            "身份/状态",
+            "机器人身份、版本与硬件状态",
+            "8080 API",
+            "robot_info",
+            url=portal.url or "",
+        ),
+        *build_acceptance_checks(profile),
+        AcceptanceCheck(
+            "mros_services",
+            "mROS",
+            "mROS 服务列表快照",
+            "SSH",
+            "ssh",
+            target="main",
+            command=MROS_SERVICE_LIST_COMMAND,
+        ),
+    ]
+
+
 class BeijingTimeWorker(QThread):
     time_ready = pyqtSignal(object)
     failed = pyqtSignal(str)
@@ -256,7 +306,7 @@ class HttpCheckWorker(QThread):
 
     def run(self):
         try:
-            response = httpx.get(self.url, timeout=4.0, follow_redirects=True)
+            response = httpx.get(self.url, timeout=4.0, follow_redirects=False)
             self.finished.emit(response.status_code, response.text[:800])
         except Exception as error:
             self.failed.emit(str(error))
@@ -272,14 +322,28 @@ class RobotInfoWorker(QThread):
 
     def run(self):
         try:
-            response = httpx.get(f"{self.portal_url}/get_robot_info", timeout=6.0)
+            response = httpx.get(
+                f"{self.portal_url}/get_robot_info",
+                timeout=6.0,
+                follow_redirects=False,
+            )
             response.raise_for_status()
-            self.finished.emit(response.json())
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("机器人信息接口未返回 JSON 对象")
+            self.finished.emit(payload)
         except Exception:
             try:
-                response = httpx.get(f"{self.portal_url}/get_local_version", timeout=6.0)
+                response = httpx.get(
+                    f"{self.portal_url}/get_local_version",
+                    timeout=6.0,
+                    follow_redirects=False,
+                )
                 response.raise_for_status()
-                self.finished.emit(response.json())
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("机器人版本接口未返回 JSON 对象")
+                self.finished.emit(payload)
             except Exception as error:
                 self.failed.emit(str(error))
 
@@ -294,9 +358,22 @@ class LogListWorker(QThread):
 
     def run(self):
         try:
-            response = httpx.get(f"{self.logs_url}log/", timeout=8.0, follow_redirects=True)
+            response = httpx.get(
+                f"{self.logs_url}log/",
+                timeout=8.0,
+                follow_redirects=False,
+            )
             response.raise_for_status()
-            names = sorted(set(re.findall(r'href="([^"]+\.log(?:\.active)?)"', response.text)))
+            candidates = re.findall(
+                r'href="([^"]+\.log(?:\.active)?)"',
+                response.text,
+                flags=re.IGNORECASE,
+            )
+            names = sorted({
+                normalized
+                for name in candidates
+                if (normalized := normalize_log_name(name)) is not None
+            })
             self.finished.emit(names)
         except Exception as error:
             self.failed.emit(str(error))
@@ -309,22 +386,35 @@ class LogDownloadWorker(QThread):
     def __init__(self, logs_url: str, log_name: str, parent=None):
         super().__init__(parent)
         self.logs_url = logs_url.rstrip("/") + "/"
-        self.log_name = log_name
+        self.log_name = normalize_log_name(log_name)
+        if self.log_name is None:
+            raise ValueError("日志文件名无效")
 
     def run(self):
         try:
-            url = urljoin(f"{self.logs_url}log/", self.log_name)
-            response = httpx.get(url, timeout=30.0, follow_redirects=True)
+            url = f"{self.logs_url}log/{quote(self.log_name, safe='')}"
+            response = httpx.get(url, timeout=30.0, follow_redirects=False)
             response.raise_for_status()
             content = response.text
-            save_dir = os.path.join(os.path.expanduser("~"), "AppData", "Local", "OliRobotManager", "logs")
-            os.makedirs(save_dir, exist_ok=True)
-            save_path = os.path.join(save_dir, self.log_name)
-            with open(save_path, "w", encoding="utf-8", errors="ignore") as file_handle:
+            save_dir = Path(APP_CONFIG.data_dir) / "logs"
+            save_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if os.name != "nt":
+                os.chmod(save_dir, 0o700)
+            save_path = save_dir / self.log_name
+            with save_path.open("w", encoding="utf-8", errors="ignore") as file_handle:
                 file_handle.write(content)
-            self.finished.emit(self.log_name, save_path, content)
+            if os.name != "nt":
+                os.chmod(save_path, 0o600)
+            self.finished.emit(self.log_name, str(save_path), content)
         except Exception as error:
             self.failed.emit(str(error))
+
+
+def normalize_log_name(log_name: str) -> str | None:
+    value = str(log_name or "").strip()
+    if value in {"", ".", ".."} or not SAFE_LOG_NAME.fullmatch(value):
+        return None
+    return value
 
 
 class AcceptanceTestPanel(QWidget):
@@ -341,6 +431,7 @@ class AcceptanceTestPanel(QWidget):
         parent=None,
         profile: RobotProfile | None = None,
         session_repository: AcceptanceSessionRepository | None = None,
+        diagnostic_output_root: Path | None = None,
     ):
         super().__init__(parent)
         self._profile = profile or ROBOT_CONFIG.active_profile or OLI_PROFILE
@@ -353,7 +444,12 @@ class AcceptanceTestPanel(QWidget):
         self._ssh_retry: tuple[int, AcceptanceCheck, str] | None = None
         self._pending_time_fix: tuple[int, AcceptanceCheck, str, str] | None = None
         self._session_repository = session_repository or AcceptanceSessionRepository()
+        self._diagnostic_output_root = (
+            diagnostic_output_root
+            or Path(APP_CONFIG.data_dir) / "diagnostic-packages"
+        )
         self._active_session: AcceptanceSession | None = None
+        self._last_diagnostic_session: AcceptanceSession | None = None
         self._build_ui()
         self._populate_checks()
 
@@ -367,6 +463,7 @@ class AcceptanceTestPanel(QWidget):
         self._profile_generation += 1
         self._ssh_retry = None
         self._pending_time_fix = None
+        self._last_diagnostic_session = None
         self._profile = profile or OLI_PROFILE
         self.CHECKS = build_acceptance_checks(self._profile)
         self._pending.clear()
@@ -374,6 +471,8 @@ class AcceptanceTestPanel(QWidget):
         self._populate_checks()
         self.detail_view.clear()
         self.summary_label.setText(f"{self._profile.display_name} · 就绪")
+        self.export_diagnostic_btn.setEnabled(False)
+        self.diagnostic_status.setText("尚未生成诊断包")
 
     def _build_ui(self):
         self.setStyleSheet(
@@ -384,6 +483,9 @@ class AcceptanceTestPanel(QWidget):
             "QPushButton:hover { background: #F2F3F5; border-color: #C9CDD4; }"
             "QPushButton#primaryBtn { background: #6C5CE7; color: #FFFFFF; border: none; font-weight: 700; }"
             "QPushButton#primaryBtn:hover { background: #5A4BD1; }"
+            "QLineEdit { background: #FFFFFF; color: #1D2129; border: 1px solid #E5E6EB; "
+            "border-radius: 6px; padding: 8px 10px; }"
+            "QLineEdit:focus { border-color: #6C5CE7; }"
             "QTableWidget { background: #FFFFFF; border: 1px solid #E5E6EB; border-radius: 8px; gridline-color: #E5E6EB; }"
             "QHeaderView::section { background: #F2F3F5; color: #4E5969; border: none; padding: 7px; font-weight: 700; }"
             "QTextEdit { background: #F7F8FA; border: 1px solid #E5E6EB; border-radius: 8px; font-family: Consolas, 'Courier New', monospace; font-size: 12px; }"
@@ -448,6 +550,35 @@ class AcceptanceTestPanel(QWidget):
         auto_layout.setContentsMargins(0, 10, 0, 0)
         auto_layout.setSpacing(8)
 
+        diagnostic_bar = QHBoxLayout()
+        diagnostic_bar.addWidget(QLabel("故障描述"))
+        self.diagnostic_description = QLineEdit()
+        self.diagnostic_description.setMaxLength(500)
+        self.diagnostic_description.setPlaceholderText(
+            "简要描述现场现象，例如：右臂上电后无响应"
+        )
+        self.diagnostic_description.setClearButtonEnabled(True)
+        diagnostic_bar.addWidget(self.diagnostic_description, 1)
+        self.run_diagnostic_btn = QPushButton("一键诊断并导出")
+        self.run_diagnostic_btn.setObjectName("primaryBtn")
+        self.run_diagnostic_btn.clicked.connect(self.run_diagnostic)
+        diagnostic_bar.addWidget(self.run_diagnostic_btn)
+        self.export_diagnostic_btn = QPushButton("重新导出")
+        self.export_diagnostic_btn.setEnabled(False)
+        self.export_diagnostic_btn.clicked.connect(self.export_last_diagnostic)
+        diagnostic_bar.addWidget(self.export_diagnostic_btn)
+        auto_layout.addLayout(diagnostic_bar)
+
+        self.diagnostic_status = QLabel("尚未生成诊断包")
+        self.diagnostic_status.setStyleSheet(
+            "color: #4E5969; background: #FFFFFF; border: 1px solid #E5E6EB; "
+            "border-radius: 6px; padding: 6px 10px;"
+        )
+        self.diagnostic_status.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        auto_layout.addWidget(self.diagnostic_status)
+
         button_bar = QHBoxLayout()
         self.run_all_btn = QPushButton("运行全部自动检查")
         self.run_all_btn.setObjectName("primaryBtn")
@@ -505,6 +636,8 @@ class AcceptanceTestPanel(QWidget):
                 self.check_table.setItem(row_index, column_index, item)
 
     def run_all_checks(self):
+        self.CHECKS = build_acceptance_checks(self._profile)
+        self._populate_checks()
         self._start_acceptance_session()
         self._pending = list(range(len(self.CHECKS)))
         self._set_running(True)
@@ -512,13 +645,136 @@ class AcceptanceTestPanel(QWidget):
         self._append_detail("开始运行自动验收检查...")
         self._run_next_check()
 
+    def run_diagnostic(self):
+        description = self.diagnostic_description.text().strip()
+        if not description:
+            self.diagnostic_status.setText("请先填写故障描述")
+            return
+        accid = ROBOT_CONFIG.ws_accid
+        if not accid or not self._profile.matches(accid):
+            self.diagnostic_status.setText("机器人身份未就绪，已阻止诊断")
+            return
+
+        self.CHECKS = build_diagnostic_checks(self._profile)
+        self._populate_checks()
+        self._last_diagnostic_session = None
+        self.export_diagnostic_btn.setEnabled(False)
+        self._start_acceptance_session(
+            purpose=AcceptanceSessionPurpose.DIAGNOSTIC,
+            problem_description=description,
+            robot_firmware=ROBOT_CONFIG.firmware_version,
+        )
+        self._pending = list(range(len(self.CHECKS)))
+        self._running_index = None
+        self._set_running(True)
+        self.detail_view.clear()
+        self.diagnostic_status.setText("正在运行只读诊断检查...")
+        self._append_detail("开始一键只读诊断，正在采集身份与版本快照...")
+        self._run_next_check()
+
+    def _run_robot_info_check(
+        self,
+        row_index: int,
+        check: AcceptanceCheck,
+    ):
+        generation = self._profile_generation
+        run_context = self._current_run_context()
+        worker = RobotInfoWorker(check.url, self)
+        worker.finished.connect(
+            lambda info, current_row=row_index, current=generation, context=run_context:
+            self._run_if_current(
+                current,
+                self._on_diagnostic_robot_info_done,
+                current_row,
+                info,
+                run_context=context,
+            )
+        )
+        worker.failed.connect(
+            lambda error, current_row=row_index, current=generation, context=run_context:
+            self._run_if_current(
+                current,
+                self._finish_check,
+                current_row,
+                False,
+                f"读取机器人信息失败: {error}",
+                error,
+                run_context=context,
+            )
+        )
+        self._workers.append(worker)
+        worker.start()
+
+    def _on_diagnostic_robot_info_done(self, row_index: int, info: dict):
+        session = self._active_session
+        if not session or session.purpose != AcceptanceSessionPurpose.DIAGNOSTIC:
+            return
+        reported_accid = extract_robot_accid(str(info.get("sn", "")))
+        if not reported_accid or reported_accid.upper() != session.robot_accid.upper():
+            reported = reported_accid or "无法识别"
+            detail = (
+                f"机器人身份不一致：8080 返回 {reported}，"
+                f"诊断目标为 {session.robot_accid}，"
+                "已停止后续采集"
+            )
+            self._set_row(
+                row_index,
+                "FAIL",
+                "机器人身份不一致",
+                datetime.now().strftime("%H:%M:%S"),
+            )
+            self._record_result(
+                row_index,
+                AcceptanceItemStatus.FAIL,
+                "机器人身份不一致",
+                detail,
+            )
+            self._pending.clear()
+            self._running_index = None
+            self._set_running(False)
+            self._finish_active_session(AcceptanceSessionStatus.CANCELLED)
+            self.diagnostic_status.setText(detail)
+            self._append_detail(detail)
+            self.log_message.emit(f"[诊断] {detail}", "error")
+            return
+        self._on_robot_info_loaded(info)
+        session.robot_versions = {
+            key: label.text()
+            for key, label in self.version_labels.items()
+        }
+        reported_firmware = str(info.get("software_version", "")).strip()
+        if reported_firmware and reported_firmware != "-":
+            session.robot_firmware = reported_firmware
+        self._session_repository.update_diagnostic_metadata(session)
+        status_summary = " · ".join(
+            f"{key}={info.get(key, '未知')}"
+            for key in ("ethercat", "imu", "camera", "camera_service")
+        )
+        core_status_ok = all(
+            str(info.get(key, "")).strip().upper() == "OK"
+            for key in ("ethercat", "imu")
+        )
+        detail = json.dumps(info, ensure_ascii=False, indent=2)[:20000]
+        self._finish_check(
+            row_index,
+            core_status_ok,
+            f"SN={reported_accid} · {status_summary}",
+            detail,
+        )
+
     def refresh_robot_versions(self):
         self._append_detail("正在从 8080 manager 读取版本信息...")
         generation = self._profile_generation
+        expected_accid = ROBOT_CONFIG.ws_accid
         worker = RobotInfoWorker(ROBOT_CONFIG.portal_url, self)
         worker.finished.connect(
-            lambda info, current=generation:
-            self._run_if_current(current, self._on_robot_info_loaded, info)
+            lambda info, current=generation, target=expected_accid:
+            self._run_if_current(
+                current,
+                self._on_robot_info_refresh_done,
+                info,
+                target,
+            )
         )
         worker.failed.connect(
             lambda error, current=generation:
@@ -528,6 +784,23 @@ class AcceptanceTestPanel(QWidget):
         )
         self._workers.append(worker)
         worker.start()
+
+    def _on_robot_info_refresh_done(self, info: dict, expected_accid: str):
+        if ROBOT_CONFIG.ws_accid != expected_accid:
+            self._append_detail("机器人目标已切换，已丢弃旧版本响应。")
+            return
+        reported_accid = extract_robot_accid(str(info.get("sn", "")))
+        if expected_accid and (
+            not reported_accid
+            or reported_accid.upper() != expected_accid.upper()
+        ):
+            reported = reported_accid or "无法识别"
+            self._append_detail(
+                f"8080 返回 {reported}，当前目标为 {expected_accid}，"
+                "已拒绝导入版本信息。"
+            )
+            return
+        self._on_robot_info_loaded(info)
 
     def _on_robot_info_loaded(self, info: dict):
         fields = {
@@ -634,7 +907,16 @@ class AcceptanceTestPanel(QWidget):
             self._running_index = None
             self._set_running(False)
             self._update_summary()
-            self._finish_active_session(AcceptanceSessionStatus.COMPLETED)
+            session = self._finish_active_session(
+                AcceptanceSessionStatus.COMPLETED
+            )
+            if (
+                session
+                and session.purpose == AcceptanceSessionPurpose.DIAGNOSTIC
+            ):
+                self._last_diagnostic_session = session
+                self.export_diagnostic_btn.setEnabled(True)
+                self._export_diagnostic_session(session)
             self.log_message.emit("[验收] 自动检查完成", "pass")
             return
 
@@ -650,6 +932,8 @@ class AcceptanceTestPanel(QWidget):
             self._run_http_check(row_index, check)
         elif check.kind == "ssh":
             self._run_ssh_check(row_index, check)
+        elif check.kind == "robot_info":
+            self._run_robot_info_check(row_index, check)
         elif check.kind == "na":
             self._finish_na(row_index, "当前型号不提供此服务")
 
@@ -664,18 +948,21 @@ class AcceptanceTestPanel(QWidget):
 
     def _run_http_check(self, row_index: int, check: AcceptanceCheck):
         generation = self._profile_generation
+        run_context = self._current_run_context()
         worker = HttpCheckWorker(check.url, self)
         worker.finished.connect(
-            lambda status_code, body, current_row=row_index, current_check=check, current=generation:
+            lambda status_code, body, current_row=row_index, current_check=check, current=generation, context=run_context:
             self._run_if_current(
                 current, self._on_http_done,
                 current_row, current_check, status_code, body,
+                run_context=context,
             )
         )
         worker.failed.connect(
-            lambda error, current_row=row_index, current=generation:
+            lambda error, current_row=row_index, current=generation, context=run_context:
             self._run_if_current(
                 current, self._finish_check, current_row, False, error, error,
+                run_context=context,
             )
         )
         self._workers.append(worker)
@@ -697,25 +984,34 @@ class AcceptanceTestPanel(QWidget):
         robot_id: str = "",
     ):
         generation = self._profile_generation
+        run_context = self._current_run_context()
         worker = self._create_ssh_worker(check.target, robot_id)
         worker.set_command(check.command)
         worker.command_finished.connect(
-            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker, current=generation:
+            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker, current=generation, context=run_context:
             self._run_if_current(
                 current, self._on_ssh_done,
                 current_row, current_check, exit_code, current_worker.collected_output,
+                run_context=context,
             )
         )
         worker.authentication_required.connect(
-            lambda host, username, robot_id, current_row=row_index, current_check=check, current=generation:
+            lambda host, username, robot_id, current_row=row_index, current_check=check, current=generation, context=run_context:
             self._run_if_current(
                 current, self._on_ssh_authentication_required,
                 current_row, current_check, host, username, robot_id,
+                run_context=context,
             )
         )
         worker.error_occurred.connect(
-            lambda error, current_row=row_index, current=generation:
-            self._run_if_current(current, self._on_ssh_error, current_row, error)
+            lambda error, current_row=row_index, current=generation, context=run_context:
+            self._run_if_current(
+                current,
+                self._on_ssh_error,
+                current_row,
+                error,
+                run_context=context,
+            )
         )
         self._workers.append(worker)
         worker.start()
@@ -774,6 +1070,15 @@ class AcceptanceTestPanel(QWidget):
         if check.key in {"main_time", "companion_time"}:
             self._request_beijing_time(row_index, check, output, verification=False)
             return
+        if check.key == "mros_services" and exit_code != 0:
+            detail = output.strip() or "mrosservice list 未返回输出"
+            self._finish_check(
+                row_index,
+                False,
+                f"mROS 服务列表失败，退出码 {exit_code}",
+                detail,
+            )
+            return
         passed, summary = self._evaluate_ssh_output(check, output)
         self._finish_check(row_index, passed, summary, output.strip()[:1200])
 
@@ -789,31 +1094,35 @@ class AcceptanceTestPanel(QWidget):
         verification: bool,
     ):
         generation = self._profile_generation
+        run_context = self._current_run_context()
         self._set_row(row_index, "执行中", "正在获取可信网络北京时间...", "")
         worker = BeijingTimeWorker(self)
         if verification:
             worker.time_ready.connect(
-                lambda reference, current_row=row_index, current_check=check, current_output=output, current=generation:
+                lambda reference, current_row=row_index, current_check=check, current_output=output, current=generation, context=run_context:
                 self._run_if_current(
                     current, self._on_time_verified,
                     current_row, current_check, current_output, reference,
+                    run_context=context,
                 )
             )
             failure_summary = "无法获取可信网络北京时间，校时结果无法复验"
         else:
             worker.time_ready.connect(
-                lambda reference, current_row=row_index, current_check=check, current_output=output, current=generation:
+                lambda reference, current_row=row_index, current_check=check, current_output=output, current=generation, context=run_context:
                 self._run_if_current(
                     current, self._on_time_checked,
                     current_row, current_check, current_output, reference,
+                    run_context=context,
                 )
             )
             failure_summary = "无法获取可信网络北京时间，未执行自动校时"
         worker.failed.connect(
-            lambda error, current_row=row_index, summary=failure_summary, current=generation:
+            lambda error, current_row=row_index, summary=failure_summary, current=generation, context=run_context:
             self._run_if_current(
                 current, self._finish_check,
                 current_row, False, summary, error,
+                run_context=context,
             )
         )
         self._workers.append(worker)
@@ -830,6 +1139,18 @@ class AcceptanceTestPanel(QWidget):
         passed, summary = _evaluate_time_output(output, check.category, beijing_now)
         if passed:
             self._finish_check(row_index, True, summary, output.strip()[:1200])
+            return
+        if (
+            self._active_session
+            and self._active_session.purpose
+            == AcceptanceSessionPurpose.DIAGNOSTIC
+        ):
+            self._finish_check(
+                row_index,
+                False,
+                f"{summary}；只读诊断模式未执行自动校时",
+                output.strip()[:1200],
+            )
             return
         if not self._profile.allow_time_repair:
             self._finish_check(
@@ -942,21 +1263,24 @@ class AcceptanceTestPanel(QWidget):
                 sudo_password, remember, from_store
             )
         sudo_password = ""
+        run_context = self._current_run_context()
         worker.command_finished.connect(
-            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker, current=generation:
+            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker, current=generation, context=run_context:
             self._run_if_current(
                 current,
                 self._on_time_fixed,
                 current_row, current_check, exit_code,
                 current_worker.collected_output, robot_id,
                 beijing_time_text, current_worker,
+                run_context=context,
             )
         )
         worker.error_occurred.connect(
-            lambda error, current_row=row_index, current=generation:
+            lambda error, current_row=row_index, current=generation, context=run_context:
             self._run_if_current(
                 current, self._finish_check,
                 current_row, False, f"自动校时 SSH 失败: {error}", error,
+                run_context=context,
             )
         )
         self._workers.append(worker)
@@ -1010,18 +1334,21 @@ class AcceptanceTestPanel(QWidget):
         worker = self._create_ssh_worker(check.target, robot_id)
         worker.set_command(TIME_CHECK_COMMAND)
         generation = self._profile_generation
+        run_context = self._current_run_context()
         worker.command_finished.connect(
-            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker, current=generation:
+            lambda exit_code, current_row=row_index, current_check=check, current_worker=worker, current=generation, context=run_context:
             self._run_if_current(
                 current, self._request_beijing_time,
                 current_row, current_check, current_worker.collected_output, True,
+                run_context=context,
             )
         )
         worker.error_occurred.connect(
-            lambda error, current_row=row_index, current=generation:
+            lambda error, current_row=row_index, current=generation, context=run_context:
             self._run_if_current(
                 current, self._finish_check,
                 current_row, False, f"校时复验 SSH 失败: {error}", error,
+                run_context=context,
             )
         )
         self._workers.append(worker)
@@ -1069,13 +1396,20 @@ class AcceptanceTestPanel(QWidget):
             has_usb3 = "5000" in stripped or "5000M" in stripped
             return has_camera and has_usb3, f"相机={'是' if has_camera else '否'}，USB3={'是' if has_usb3 else '否'}"
         if check.key == "imu":
-            import re
             matches = re.findall(r"average rate:\s*([\d.]+)", stripped)
             frequency = float(matches[-1]) if matches else 0.0
             passed = abs(frequency - ROBOT_CONFIG.expected_imu_hz) <= ROBOT_CONFIG.imu_tolerance_hz
             return passed, f"IMU {frequency:.1f}Hz，期望 {ROBOT_CONFIG.expected_imu_hz:.0f}Hz"
         if check.key == "main_disk":
             return "%" in stripped, stripped.splitlines()[-1] if stripped.splitlines() else "已读取磁盘"
+        if check.key == "mros_services":
+            clean_output = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", stripped)
+            services = re.findall(
+                r"^\s*\*\s+(\S+)\s+\[type:",
+                clean_output,
+                re.MULTILINE,
+            )
+            return bool(services), f"读取到 {len(services)} 个 mROS 服务"
         return True, stripped.splitlines()[0]
 
     def _finish_check(self, row_index: int, passed: bool, summary: str, detail: str):
@@ -1126,6 +1460,7 @@ class AcceptanceTestPanel(QWidget):
     def _set_running(self, running: bool):
         self.run_all_btn.setEnabled(not running)
         self.run_selected_btn.setEnabled(not running)
+        self.run_diagnostic_btn.setEnabled(not running)
         self.cancel_btn.setEnabled(running)
         self.summary_label.setText("执行中..." if running else "就绪")
 
@@ -1145,23 +1480,83 @@ class AcceptanceTestPanel(QWidget):
             f"完成：PASS {passed} / FAIL {failed} / N/A {not_applicable}"
         )
 
-    def _run_if_current(self, generation: int, callback, *args):
-        if generation == self._profile_generation:
-            return callback(*args)
-        return None
+    def _run_if_current(
+        self,
+        generation: int,
+        callback,
+        *args,
+        run_context: AcceptanceRunContext | None = None,
+    ):
+        if generation != self._profile_generation:
+            return None
+        if run_context is not None and not self._run_context_matches(run_context):
+            session = self._active_session
+            if session and session.session_id == run_context.session_id:
+                self._profile_generation += 1
+                self._pending.clear()
+                self._running_index = None
+                self._ssh_retry = None
+                self._pending_time_fix = None
+                self._set_running(False)
+                self.cancel_active_session(
+                    "机器人目标已变化，旧诊断结果已丢弃"
+                )
+            return None
+        return callback(*args)
 
-    def _start_acceptance_session(self):
+    def _current_run_context(self) -> AcceptanceRunContext | None:
+        session = self._active_session
+        if not session:
+            return None
+        return AcceptanceRunContext(
+            generation=self._profile_generation,
+            session_id=session.session_id,
+            profile_key=session.profile_key,
+            robot_accid=session.robot_accid,
+        )
+
+    def _run_context_matches(self, context: AcceptanceRunContext) -> bool:
+        session = self._active_session
+        return bool(
+            context.generation == self._profile_generation
+            and session
+            and session.session_id == context.session_id
+            and session.profile_key == context.profile_key
+            and session.robot_accid == context.robot_accid
+            and self._profile.key == context.profile_key
+            and ROBOT_CONFIG.ws_accid == context.robot_accid
+        )
+
+    def _start_acceptance_session(
+        self,
+        purpose: AcceptanceSessionPurpose = AcceptanceSessionPurpose.ACCEPTANCE,
+        problem_description: str = "",
+        robot_firmware: str = "unknown",
+    ):
         self.cancel_active_session("开始了新的验收会话")
         self._active_session = AcceptanceSession.create(
             robot_accid=ROBOT_CONFIG.ws_accid or "unknown",
             profile_key=self._profile.key,
             operator_name=getpass.getuser() or "unknown",
             software_version=_application_version(),
+            purpose=purpose,
+            problem_description=problem_description,
+            robot_firmware=robot_firmware,
+            secrets=self._runtime_secrets(),
         )
         self._session_repository.create(self._active_session)
         self.log_message.emit(
             f"[验收] 已创建会话 {self._active_session.session_id}",
             "info",
+        )
+
+    @staticmethod
+    def _runtime_secrets():
+        return (
+            *ROBOT_CONFIG.main_control_passwords,
+            ROBOT_CONFIG.perception_password,
+            ROBOT_CONFIG.wifi_password,
+            ROBOT_CONFIG.router_admin_password,
         )
 
     def _record_result(
@@ -1174,12 +1569,6 @@ class AcceptanceTestPanel(QWidget):
         if not self._active_session:
             return
         check = self.CHECKS[row_index]
-        secrets = (
-            *ROBOT_CONFIG.main_control_passwords,
-            ROBOT_CONFIG.perception_password,
-            ROBOT_CONFIG.wifi_password,
-            ROBOT_CONFIG.router_admin_password,
-        )
         result = AcceptanceItemResult.create(
             check_key=check.key,
             category=check.category,
@@ -1187,7 +1576,7 @@ class AcceptanceTestPanel(QWidget):
             status=status,
             summary=summary,
             detail=detail,
-            secrets=secrets,
+            secrets=self._runtime_secrets(),
         )
         self._active_session.add_result(result)
         self._session_repository.save_result(
@@ -1199,9 +1588,45 @@ class AcceptanceTestPanel(QWidget):
         session = self._active_session
         self._active_session = None
         if not session:
-            return
+            return None
         session.finish(status)
         self._session_repository.finish(session)
+        return session
+
+    def export_last_diagnostic(self):
+        if not self._last_diagnostic_session:
+            self.diagnostic_status.setText("没有可导出的已完成诊断会话")
+            return
+        self._export_diagnostic_session(self._last_diagnostic_session)
+
+    def _export_diagnostic_session(self, session: AcceptanceSession):
+        if (
+            ROBOT_CONFIG.ws_accid != session.robot_accid
+            or self._profile.key != session.profile_key
+        ):
+            self.diagnostic_status.setText("机器人目标已切换，已阻止导出旧诊断")
+            return
+        try:
+            package_path = export_diagnostic_package(
+                session,
+                self._diagnostic_output_root,
+                secrets=self._runtime_secrets(),
+            )
+            session.package_path = str(package_path)
+            self._session_repository.save_package_path(
+                session.session_id,
+                session.package_path,
+            )
+            self.diagnostic_status.setText(f"诊断包: {package_path}")
+            self._append_detail(f"诊断包已生成: {package_path}")
+            self.log_message.emit(f"[诊断] 已生成 {package_path}", "pass")
+        except Exception as error:
+            detail = redact_acceptance_detail(
+                str(error),
+                self._runtime_secrets(),
+            )
+            self.diagnostic_status.setText(f"诊断包导出失败: {detail}")
+            self.log_message.emit(f"[诊断] 导出失败: {detail}", "error")
 
     def cancel_checks(self):
         self._profile_generation += 1
@@ -1215,6 +1640,9 @@ class AcceptanceTestPanel(QWidget):
     def cancel_active_session(self, reason: str = "验收会话已取消"):
         if not self._active_session:
             return
-        session_id = self._active_session.session_id
+        session = self._active_session
+        session_id = session.session_id
         self._finish_active_session(AcceptanceSessionStatus.CANCELLED)
+        if session.purpose == AcceptanceSessionPurpose.DIAGNOSTIC:
+            self.diagnostic_status.setText(f"诊断已取消: {reason}")
         self.log_message.emit(f"[验收] {reason}: {session_id}", "warn")

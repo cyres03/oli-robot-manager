@@ -59,6 +59,11 @@ class DatabaseConnection:
                 operator_name TEXT NOT NULL,
                 software_version TEXT NOT NULL,
                 started_at TEXT NOT NULL,
+                purpose TEXT NOT NULL DEFAULT 'acceptance',
+                problem_description TEXT NOT NULL DEFAULT '',
+                robot_firmware TEXT NOT NULL DEFAULT 'unknown',
+                robot_versions_json TEXT NOT NULL DEFAULT '{}',
+                package_path TEXT NOT NULL DEFAULT '',
                 completed_at TEXT,
                 status TEXT NOT NULL,
                 pass_count INTEGER NOT NULL DEFAULT 0,
@@ -127,5 +132,24 @@ class DatabaseConnection:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_dance_counts_robot_name ON dance_counts(robot_accid, name)"
         )
+        acceptance_columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(acceptance_sessions)"
+            ).fetchall()
+        }
+        acceptance_migrations = {
+            "purpose": "TEXT NOT NULL DEFAULT 'acceptance'",
+            "problem_description": "TEXT NOT NULL DEFAULT ''",
+            "robot_firmware": "TEXT NOT NULL DEFAULT 'unknown'",
+            "robot_versions_json": "TEXT NOT NULL DEFAULT '{}'",
+            "package_path": "TEXT NOT NULL DEFAULT ''",
+        }
+        for column_name, definition in acceptance_migrations.items():
+            if column_name not in acceptance_columns:
+                conn.execute(
+                    f"ALTER TABLE acceptance_sessions ADD COLUMN "
+                    f"{column_name} {definition}"
+                )
         conn.commit()
         conn.close()
