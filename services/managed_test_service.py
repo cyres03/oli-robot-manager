@@ -7,13 +7,15 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from config import APP_CONFIG, ROBOT_CONFIG
-from models.robot_profile import RobotProfile
+from models.robot_profile import CapabilityState, RobotProfile
 from models.managed_case import (
     TestCaseDefinition,
     TestRunResult,
     TestRunStatus,
+    TestSource,
     load_test_cases,
 )
+from workers.hand_fatigue_worker import HandFatigueWorker
 from workers.managed_test_worker import TestCaseWorker
 
 
@@ -41,7 +43,7 @@ class TestCaseService(QObject):
         self._accid = ""
         self._firmware = "unknown"
         self._generation = 0
-        self._worker: TestCaseWorker | None = None
+        self._worker: TestCaseWorker | HandFatigueWorker | None = None
         self._pending_authorization: (
             tuple[int, str, bool, Path | None, tuple[str, ...] | None] | None
         ) = None
@@ -74,6 +76,11 @@ class TestCaseService(QObject):
         return [
             case for case in self._all_cases
             if case.product_key == self._profile.key
+            and (
+                not case.required_capability
+                or self._profile.capability(case.required_capability)
+                == CapabilityState.SUPPORTED
+            )
         ]
 
     def run_case(
@@ -107,25 +114,36 @@ class TestCaseService(QObject):
         if node is None:
             self.error_occurred.emit(f"当前型号没有节点角色 {case.target_role}")
             return
-        passwords = (
-            list(ROBOT_CONFIG.main_control_passwords)
-            if node.role == "main"
-            else [ROBOT_CONFIG.perception_password]
-        )
         generation = self._generation
-        worker = TestCaseWorker(
-            case=case,
-            profile=self._profile,
-            accid=self._accid,
-            firmware=self._firmware,
-            passwords=passwords,
-            result_root=self.result_root,
-            resource_root=self.resource_root,
-            local_script_path=local_script_path,
-            approved=approved,
-            generation=generation,
-            parent=self,
-        )
+        if case.source == TestSource.BUILTIN_RUNNER:
+            worker = HandFatigueWorker(
+                case=case,
+                profile=self._profile,
+                accid=self._accid,
+                firmware=self._firmware,
+                approved=approved,
+                generation=generation,
+                parent=self,
+            )
+        else:
+            passwords = (
+                list(ROBOT_CONFIG.main_control_passwords)
+                if node.role == "main"
+                else [ROBOT_CONFIG.perception_password]
+            )
+            worker = TestCaseWorker(
+                case=case,
+                profile=self._profile,
+                accid=self._accid,
+                firmware=self._firmware,
+                passwords=passwords,
+                result_root=self.result_root,
+                resource_root=self.resource_root,
+                local_script_path=local_script_path,
+                approved=approved,
+                generation=generation,
+                parent=self,
+            )
         worker.output_line.connect(
             lambda line, stream, current=generation:
             self._emit_if_current(current, self.output_line, line, stream)
@@ -134,13 +152,14 @@ class TestCaseService(QObject):
             lambda result, current=generation:
             self._on_completed(current, result)
         )
-        worker.authentication_required.connect(
-            lambda host, username, robot_id, current=generation:
-            self._on_authentication_required(
-                current, host, username, robot_id,
-                case.case_id, approved, local_script_path, arguments_override,
+        if case.source != TestSource.BUILTIN_RUNNER:
+            worker.authentication_required.connect(
+                lambda host, username, robot_id, current=generation:
+                self._on_authentication_required(
+                    current, host, username, robot_id,
+                    case.case_id, approved, local_script_path, arguments_override,
+                )
             )
-        )
         self._worker = worker
         self.run_started.emit(case)
         worker.start()

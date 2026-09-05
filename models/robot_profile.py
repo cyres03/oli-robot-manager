@@ -146,6 +146,7 @@ OLI_PROFILE = RobotProfile(
         ("action_execution", CapabilityState.SUPPORTED),
         ("calibration", CapabilityState.SUPPORTED),
         ("backlash", CapabilityState.SUPPORTED),
+        ("hand_fatigue", CapabilityState.SUPPORTED),
         ("mcp", CapabilityState.SUPPORTED),
     ),
     acceptance_check_keys=(
@@ -186,6 +187,7 @@ L04_PROFILE = RobotProfile(
         ("backlash", CapabilityState.PENDING_VALIDATION),
         ("audio_control", CapabilityState.PENDING_VALIDATION),
         ("led_control", CapabilityState.PENDING_VALIDATION),
+        ("hand_fatigue", CapabilityState.SUPPORTED),
         ("claw", CapabilityState.UNSUPPORTED),
         ("ub_manipulation", CapabilityState.UNSUPPORTED),
         ("wb_manipulation", CapabilityState.UNSUPPORTED),

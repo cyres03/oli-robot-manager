@@ -38,6 +38,7 @@ OLI_WORKSPACE = WorkspaceDefinition(
     routes=(
         WorkspaceRoute("dance_library", "Oli 舞蹈与动作"),
         WorkspaceRoute("controls", "Oli 基础控制"),
+        WorkspaceRoute("test_cases", "测试用例"),
         WorkspaceRoute("acceptance", "Oli 验收"),
         WorkspaceRoute("log_analysis", "日志诊断"),
         WorkspaceRoute("health_check", "健康检查"),

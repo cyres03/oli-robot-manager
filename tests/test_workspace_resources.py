@@ -1,6 +1,7 @@
 import json
 
 from models.robot_profile import (
+    CapabilityState,
     L04_PROFILE,
     OLI_PROFILE,
     RobotIdentity,
@@ -45,10 +46,13 @@ def test_workspace_registry_routes_products():
     assert resolve_workspace(L04_PROFILE) is LUNA_WORKSPACE
     assert resolve_workspace(None) is CONNECTION_WORKSPACE
     assert OLI_WORKSPACE.route("calibrate") is not None
-    assert OLI_WORKSPACE.route("test_cases") is None
+    assert OLI_WORKSPACE.route("test_cases") is not None
     assert LUNA_WORKSPACE.route("calibrate") is None
     assert LUNA_WORKSPACE.route("log_analysis") is not None
     assert LUNA_WORKSPACE.route("test_cases") is not None
+    assert OLI_PROFILE.capability("hand_fatigue") == CapabilityState.SUPPORTED
+    assert L04_PROFILE.capability("hand_fatigue") == CapabilityState.SUPPORTED
+    assert "hand_fatigue" not in L04_PROFILE.allowed_tools
 
 
 def test_sidebar_switches_product_navigation(qtbot):

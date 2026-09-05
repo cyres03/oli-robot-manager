@@ -11,6 +11,7 @@ class TestSource(str, Enum):
     REMOTE_COMMAND = "remote_command"
     BUNDLED_SCRIPT = "bundled_script"
     LOCAL_SCRIPT = "local_script"
+    BUILTIN_RUNNER = "builtin_runner"
 
 
 class TestRisk(str, Enum):
@@ -34,6 +35,9 @@ HIGH_RISK_FLAGS = frozenset({
     TestRisk.RESTART,
     TestRisk.PERSISTENT_WRITE,
 })
+
+HAND_FATIGUE_RUNNER = "brainco_hand_fatigue"
+HAND_FATIGUE_CAPABILITY = "hand_fatigue"
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,8 @@ class TestCaseDefinition:
     timeout_seconds: int
     command: str = ""
     script_path: str = ""
+    runner: str = ""
+    required_capability: str = ""
     interpreter: str = "python3"
     arguments: tuple[str, ...] = ()
     expected_exit_codes: tuple[int, ...] = (0,)
@@ -183,6 +189,9 @@ def _parse_case(raw: object, resource_root: Path) -> TestCaseDefinition:
 
     command = str(raw.get("command", "")).strip()
     script_path = str(raw.get("script_path", "")).strip()
+    runner = str(raw.get("runner", "")).strip()
+    required_capability = str(raw.get("required_capability", "")).strip()
+    target_role = str(raw.get("target_role", "")).strip()
     if source == TestSource.REMOTE_COMMAND and not command:
         raise ValueError(f"测试用例 {case_id} 缺少 command")
     if source == TestSource.BUNDLED_SCRIPT:
@@ -191,6 +200,21 @@ def _parse_case(raw: object, resource_root: Path) -> TestCaseDefinition:
         path = _safe_bundled_path(resource_root, script_path)
         if not path.is_file():
             raise ValueError(f"测试脚本不存在: {script_path}")
+    if source == TestSource.BUILTIN_RUNNER and runner != HAND_FATIGUE_RUNNER:
+        raise ValueError(f"测试用例 {case_id} 的内置运行器无效: {runner or '空'}")
+    if source != TestSource.BUILTIN_RUNNER and runner:
+        raise ValueError(f"测试用例 {case_id} 仅内置运行器来源可声明 runner")
+    if runner == HAND_FATIGUE_RUNNER:
+        if target_role != "main":
+            raise ValueError(f"测试用例 {case_id} 的灵巧手运行器必须使用 main 节点")
+        if required_capability != HAND_FATIGUE_CAPABILITY:
+            raise ValueError(
+                f"测试用例 {case_id} 必须声明能力 {HAND_FATIGUE_CAPABILITY}"
+            )
+        if TestRisk.HARDWARE_CONTROL not in risks:
+            raise ValueError(
+                f"测试用例 {case_id} 必须声明风险 hardware_control"
+            )
 
     timeout_seconds = int(raw.get("timeout_seconds", 30))
     if not 1 <= timeout_seconds <= 86400:
@@ -227,12 +251,14 @@ def _parse_case(raw: object, resource_root: Path) -> TestCaseDefinition:
         case_id=case_id,
         name=str(raw.get("name", case_id)).strip(),
         product_key=str(raw.get("product_key", "")).strip(),
-        target_role=str(raw.get("target_role", "")).strip(),
+        target_role=target_role,
         source=source,
         category=str(raw.get("category", "通用")).strip(),
         timeout_seconds=timeout_seconds,
         command=command,
         script_path=script_path,
+        runner=runner,
+        required_capability=required_capability,
         interpreter=str(raw.get("interpreter", "python3")).strip() or "python3",
         arguments=tuple(str(value) for value in raw.get("arguments", [])),
         expected_exit_codes=expected_exit_codes,

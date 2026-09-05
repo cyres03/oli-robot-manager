@@ -4,6 +4,8 @@ from pathlib import Path
 import pytest
 
 from models.managed_case import (
+    HAND_FATIGUE_CAPABILITY,
+    HAND_FATIGUE_RUNNER,
     TestCaseDefinition as CaseDefinition,
     TestRisk as Risk,
     TestSource as Source,
@@ -14,17 +16,20 @@ from models.managed_case import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_builtin_luna_cases_target_profile_roles_without_ips():
+def test_builtin_cases_include_profile_scoped_hand_fatigue():
     cases = load_test_cases(PROJECT_ROOT / "resources/test_cases/cases.json")
 
     assert [case.case_id for case in cases] == [
         "luna-mros-node-health",
         "luna-speech-vision-snapshot",
+        "luna-hand-fatigue",
+        "oli-hand-fatigue",
     ]
-    assert {case.target_role for case in cases} == {"main", "speech_vision"}
-    assert all(case.product_key == "hu_l04_01" for case in cases)
+    luna_cases = [case for case in cases if case.product_key == "hu_l04_01"]
+    assert {case.target_role for case in luna_cases} == {"main", "speech_vision"}
+    assert len(luna_cases) == 3
     assert all("10.192." not in case.command for case in cases)
-    assert all(case.is_first_phase_safe for case in cases)
+    assert all(case.is_first_phase_safe for case in cases[:2])
     mros_case = cases[0]
     assert mros_case.source == Source.BUNDLED_SCRIPT
     assert mros_case.target_role == "main"
@@ -33,6 +38,13 @@ def test_builtin_luna_cases_target_profile_roles_without_ips():
     assert mros_case.requires_pty is True
     assert cases[1].requires_pty is False
     assert cases[1].category == "伴随节点"
+    for fatigue_case in cases[2:]:
+        assert fatigue_case.source == Source.BUILTIN_RUNNER
+        assert fatigue_case.runner == HAND_FATIGUE_RUNNER
+        assert fatigue_case.required_capability == HAND_FATIGUE_CAPABILITY
+        assert fatigue_case.risks == frozenset({Risk.HARDWARE_CONTROL})
+        assert fatigue_case.arguments == ("7200", "10")
+        assert fatigue_case.requires_confirmation is True
     script = (PROJECT_ROOT / "resources/test_cases" / mros_case.script_path).read_text(
         encoding="utf-8"
     )
@@ -54,6 +66,62 @@ def test_high_risk_case_requires_explicit_approval():
     with pytest.raises(PermissionError, match="hardware_control"):
         case.validate_approval(False)
     case.validate_approval(True)
+
+
+def test_hand_fatigue_runner_requires_capability_and_hardware_risk(tmp_path):
+    manifest = tmp_path / "cases.json"
+    manifest.write_text(json.dumps({
+        "cases": [{
+            "id": "luna-hand-fatigue",
+            "name": "双灵巧手疲劳测试",
+            "product_key": "hu_l04_01",
+            "target_role": "main",
+            "source": "builtin_runner",
+            "runner": HAND_FATIGUE_RUNNER,
+            "required_capability": HAND_FATIGUE_CAPABILITY,
+            "category": "灵巧手",
+            "timeout_seconds": 7500,
+        }],
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="hardware_control"):
+        load_test_cases(manifest)
+
+
+def test_manifest_rejects_unknown_builtin_runner(tmp_path):
+    manifest = tmp_path / "cases.json"
+    manifest.write_text(json.dumps({
+        "cases": [{
+            "id": "unknown-runner",
+            "name": "Unknown",
+            "product_key": "hu_l04_01",
+            "target_role": "main",
+            "source": "builtin_runner",
+            "runner": "unknown",
+        }],
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="内置运行器无效"):
+        load_test_cases(manifest)
+
+
+def test_manifest_rejects_hand_fatigue_on_non_main_node(tmp_path):
+    manifest = tmp_path / "cases.json"
+    manifest.write_text(json.dumps({
+        "cases": [{
+            "id": "wrong-hand-node",
+            "name": "Wrong node",
+            "product_key": "hu_l04_01",
+            "target_role": "speech_vision",
+            "source": "builtin_runner",
+            "runner": HAND_FATIGUE_RUNNER,
+            "required_capability": HAND_FATIGUE_CAPABILITY,
+            "risks": ["hardware_control"],
+        }],
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="必须使用 main 节点"):
+        load_test_cases(manifest)
 
 
 def test_remote_command_requires_confirmation_even_when_read_only():
