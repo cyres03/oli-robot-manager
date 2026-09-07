@@ -78,8 +78,15 @@ class WifiManager:
     @staticmethod
     def _get_pattern() -> re.Pattern:
         from config import ROBOT_CONFIG
-        prefixes = [re.escape(prefix) for prefix in ROBOT_CONFIG.wifi_ssid_patterns if prefix]
-        return re.compile(r"^(?:" + "|".join(prefixes) + r")", flags=re.IGNORECASE)
+        patterns = []
+        for prefix in ROBOT_CONFIG.wifi_ssid_patterns:
+            if not prefix:
+                continue
+            if prefix.upper() == "TRON2A":
+                patterns.append(r"TRON2A_\d+(?:_(?:5G|2\.4G))?$")
+            else:
+                patterns.append(re.escape(prefix))
+        return re.compile(r"^(?:" + "|".join(patterns) + r")", flags=re.IGNORECASE)
 
     @staticmethod
     def _get_all_interfaces() -> list[dict]:

@@ -13,7 +13,7 @@ def test_scan_robot_networks_keeps_supported_models(monkeypatch):
             {"ssid": "HU_D04_01_121_5G", "signal": 80, "security": "WPA2"},
             {"ssid": "HU_L04_01_091_5G", "signal": 85, "security": "WPA2"},
             {"ssid": "HU_X99_01_001_5G", "signal": 70, "security": "WPA2"},
-            {"ssid": "WF_TRON2A_001", "signal": 75, "security": "WPA2"},
+            {"ssid": "TRON2A_001", "signal": 75, "security": "WPA2"},
             {"ssid": "office", "signal": 90, "security": "WPA2"},
         ]),
     )
@@ -22,8 +22,52 @@ def test_scan_robot_networks_keeps_supported_models(monkeypatch):
         {"ssid": "HU_D04_01_121_5G", "signal": 80, "security": "WPA2"},
         {"ssid": "HU_L04_01_091_5G", "signal": 85, "security": "WPA2"},
         {"ssid": "HU_X99_01_001_5G", "signal": 70, "security": "WPA2"},
-        {"ssid": "WF_TRON2A_001", "signal": 75, "security": "WPA2"},
+        {"ssid": "TRON2A_001", "signal": 75, "security": "WPA2"},
     ]
+
+
+def test_connected_tron2a_wifi_is_recognized(monkeypatch):
+    for ssid in ("TRON2A_185_5G", "TRON2A_185_2.4G"):
+        monkeypatch.setattr(
+            WifiManager,
+            "_get_all_interfaces",
+            staticmethod(lambda current_ssid=ssid: [{
+                "name": "wlan0",
+                "ssid": current_ssid,
+                "description": "",
+                "state": "connected",
+                "signal": 90,
+            }]),
+        )
+
+        assert WifiManager.is_robot_wifi() is True
+        assert WifiManager.get_robot_ssid() == ssid
+
+
+def test_tron2a_wifi_filter_rejects_invalid_identity_prefixes(monkeypatch):
+    invalid_ssids = (
+        "TRON2AB_lab",
+        "TRON2A-office",
+        "TRON2A_abc",
+        "TRON2A_185_extra",
+    )
+    monkeypatch.setattr(
+        WifiManager,
+        "_get_all_interfaces",
+        staticmethod(lambda: [
+            {
+                "name": f"wlan{index}",
+                "ssid": ssid,
+                "description": "",
+                "state": "connected",
+                "signal": 80,
+            }
+            for index, ssid in enumerate(invalid_ssids)
+        ]),
+    )
+
+    assert WifiManager.is_robot_wifi() is False
+    assert WifiManager.get_connected_robot_ssids() == []
 
 
 def test_linux_scan_forces_rescan(monkeypatch):
