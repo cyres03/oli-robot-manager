@@ -9,12 +9,26 @@ from models.robot_profile import RobotProfile
 from services import credential_store
 
 
+TRON2_LOCKED_SETTING_KEYS = frozenset({
+    "mcp_url",
+    "websocket_url",
+    "ws_accid",
+    "main_control_ip",
+    "main_control_user",
+    "perception_ip",
+    "perception_user",
+    "wifi_ssid_patterns",
+    "expected_cpu_cores",
+})
+
+
 class SettingsPanel(QWidget):
     settings_changed = pyqtSignal(dict)
     credentials_clear_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._locked_fields: frozenset[str] = frozenset()
         self._build_ui()
 
     def _build_ui(self):
@@ -146,11 +160,28 @@ class SettingsPanel(QWidget):
                 field.setText(str(value))
             elif isinstance(field, QSpinBox):
                 field.setValue(int(value))
+        self._locked_fields = (
+            TRON2_LOCKED_SETTING_KEYS
+            if profile and profile.key == "tron2"
+            else frozenset()
+        )
+        for key, field in self._fields.items():
+            locked = key in self._locked_fields
+            if isinstance(field, QLineEdit):
+                field.setReadOnly(locked)
+            else:
+                field.setEnabled(not locked)
+            field.setToolTip(
+                "由 TRON2 产品基线管理，不允许在设置页覆盖"
+                if locked else ""
+            )
         self.refresh_credential_status()
 
     def _save_settings(self):
         changes = {}
         for key, field in self._fields.items():
+            if key in self._locked_fields:
+                continue
             if isinstance(field, QLineEdit):
                 changes[key] = field.text()
             elif isinstance(field, QSpinBox):

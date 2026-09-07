@@ -63,7 +63,21 @@ LUNA_WORKSPACE = WorkspaceDefinition(
     ),
 )
 
-WORKSPACES = (OLI_WORKSPACE, LUNA_WORKSPACE)
+
+TRON2_WORKSPACE = WorkspaceDefinition(
+    key="tron2",
+    display_name="TRON2 工作区",
+    profile_key="tron2",
+    default_route="acceptance",
+    routes=(
+        WorkspaceRoute("acceptance", "TRON2 验收"),
+        WorkspaceRoute("log_analysis", "日志诊断"),
+        WorkspaceRoute("settings", "设置"),
+    ),
+)
+
+
+WORKSPACES = (OLI_WORKSPACE, LUNA_WORKSPACE, TRON2_WORKSPACE)
 
 
 def resolve_workspace(profile: RobotProfile | None) -> WorkspaceDefinition:

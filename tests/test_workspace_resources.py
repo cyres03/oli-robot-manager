@@ -4,6 +4,7 @@ from models.robot_profile import (
     CapabilityState,
     L04_PROFILE,
     OLI_PROFILE,
+    TRON2_PROFILE,
     RobotIdentity,
     RobotIdentityStatus,
 )
@@ -11,6 +12,7 @@ from models.workspace import (
     CONNECTION_WORKSPACE,
     LUNA_WORKSPACE,
     OLI_WORKSPACE,
+    TRON2_WORKSPACE,
     resolve_workspace,
 )
 from services.dance_service import DanceService, ResourceContext
@@ -44,6 +46,7 @@ def _result(
 def test_workspace_registry_routes_products():
     assert resolve_workspace(OLI_PROFILE) is OLI_WORKSPACE
     assert resolve_workspace(L04_PROFILE) is LUNA_WORKSPACE
+    assert resolve_workspace(TRON2_PROFILE) is TRON2_WORKSPACE
     assert resolve_workspace(None) is CONNECTION_WORKSPACE
     assert OLI_WORKSPACE.route("calibrate") is not None
     assert OLI_WORKSPACE.route("test_cases") is not None
@@ -53,6 +56,14 @@ def test_workspace_registry_routes_products():
     assert OLI_PROFILE.capability("hand_fatigue") == CapabilityState.SUPPORTED
     assert L04_PROFILE.capability("hand_fatigue") == CapabilityState.SUPPORTED
     assert "hand_fatigue" not in L04_PROFILE.allowed_tools
+    assert TRON2_WORKSPACE.default_route == "acceptance"
+    assert TRON2_WORKSPACE.route("acceptance") is not None
+    assert TRON2_WORKSPACE.route("log_analysis") is not None
+    assert TRON2_WORKSPACE.route("controls") is None
+    assert TRON2_WORKSPACE.route("dance_library") is None
+    assert TRON2_WORKSPACE.route("test_cases") is None
+    assert TRON2_WORKSPACE.route("health_check") is None
+    assert TRON2_WORKSPACE.route("calibrate") is None
 
 
 def test_sidebar_switches_product_navigation(qtbot):
@@ -73,6 +84,18 @@ def test_sidebar_switches_product_navigation(qtbot):
     assert sidebar._buttons["dance_library"].text().strip() == "Oli 舞蹈与动作"
     assert not sidebar._buttons["calibrate"].isHidden()
 
+    sidebar.apply_profile(TRON2_PROFILE)
+    sidebar.apply_workspace(TRON2_WORKSPACE)
+    assert sidebar._buttons["acceptance"].text().strip() == "TRON2 验收"
+    assert sidebar._buttons["controls"].isHidden()
+    assert sidebar._buttons["dance_library"].isHidden()
+    assert sidebar._buttons["calibrate"].isHidden()
+    assert sidebar._ssh_buttons[0].text().strip() == (
+        "开发扩展电脑 (guest@10.192.1.4)"
+    )
+    assert not sidebar._ssh_buttons[0].isHidden()
+    assert sidebar._ssh_buttons[1].isHidden()
+
 
 def test_health_route_uses_product_specific_panel(qtbot, monkeypatch):
     from ui.main_window import MainWindow
@@ -92,6 +115,27 @@ def test_health_route_uses_product_specific_panel(qtbot, monkeypatch):
     window._active_workspace = OLI_WORKSPACE
     window._on_navigate("health_check")
     assert indices == [3]
+
+
+def test_tron2_does_not_load_hidden_dance_resources():
+    from ui.main_window import MainWindow
+
+    window = MainWindow.__new__(MainWindow)
+    calls = []
+    window._dance_service = type(
+        "DanceServiceStub",
+        (),
+        {
+            "load_dances": lambda _self: calls.append("dances"),
+            "load_motions": lambda _self: calls.append("motions"),
+        },
+    )()
+
+    window._load_profile_resources(TRON2_PROFILE)
+    assert calls == []
+
+    window._load_profile_resources(L04_PROFILE)
+    assert calls == ["dances", "motions"]
 
 
 def test_resource_switch_clears_views_and_rejects_old_response(qapp):

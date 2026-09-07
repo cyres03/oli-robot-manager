@@ -1,6 +1,6 @@
 import config
 from config import RobotConfig
-from models.robot_profile import L04_PROFILE, RobotIdentityStatus
+from models.robot_profile import L04_PROFILE, TRON2_PROFILE, RobotIdentityStatus
 from network.wifi_manager import WifiManager
 from workers.mcp_worker import McpWorker
 
@@ -79,4 +79,44 @@ def test_worker_blocks_l04_control_and_drops_stale_queue(qapp):
 
     worker.update_target("HU_L04_01_092", L04_PROFILE.allowed_tools)
 
+    assert worker._pending_requests == []
+
+
+def test_applying_tron2_profile_updates_documented_endpoints():
+    identity = config.resolve_robot_identity(
+        ["WF_TRON2A_185"],
+        "WF_TRON2A_185",
+    )
+    robot_config = RobotConfig()
+
+    assert robot_config.apply_identity(identity) is True
+    assert robot_config.ws_accid == "WF_TRON2A_185"
+    assert robot_config.profile_key == "tron2"
+    assert robot_config.main_control_ip == "10.192.1.2"
+    assert robot_config.perception_ip == "10.192.1.4"
+    assert robot_config.perception_user == "guest"
+    assert robot_config.portal_url == "http://10.192.1.2:8080"
+    assert robot_config.logs_url == ""
+    assert robot_config.websocket_url == "ws://10.192.1.2:5000"
+    assert robot_config.mcp_supported is False
+    assert robot_config.mcp_url == ""
+    assert robot_config.expected_motor_count is None
+
+
+def test_worker_blocks_all_tron2_tools(qapp):
+    worker = McpWorker(
+        "ws://10.192.1.2:5000",
+        "WF_TRON2A_185",
+        allowed_tools=TRON2_PROFILE.allowed_tools,
+    )
+    errors = []
+    worker.tool_error.connect(lambda name, detail: errors.append((name, detail)))
+
+    worker.call_tool("get_motions", {})
+    worker.call_tool("set_walk_velocity", {"x": 0.1, "y": 0, "yaw": 0})
+
+    assert errors == [
+        ("get_motions", "当前机器人型号未开放此能力"),
+        ("set_walk_velocity", "当前机器人型号未开放此能力"),
+    ]
     assert worker._pending_requests == []
