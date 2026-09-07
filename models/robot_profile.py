@@ -25,6 +25,7 @@ class RobotNode:
     host: str
     username: str
     expected_cpu_cores: int | None = None
+    ssh_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,8 @@ L04_READ_ONLY_TOOLS = frozenset({
     "audio_get_wakeup",
 })
 
+TRON2_BASELINE_TOOLS = frozenset()
+
 
 OLI_PROFILE = RobotProfile(
     key="oli",
@@ -201,7 +204,58 @@ L04_PROFILE = RobotProfile(
 )
 
 
-ROBOT_PROFILES = (OLI_PROFILE, L04_PROFILE)
+TRON2_PROFILE = RobotProfile(
+    key="tron2",
+    display_name="TRON2 EDU",
+    model_prefixes=("WF_TRON2", "WF_TRON2A"),
+    ssid_prefixes=("WF_TRON2", "WF_TRON2A"),
+    main_node=RobotNode(
+        "main",
+        "机器人主机",
+        "10.192.1.2",
+        "limx",
+        ssh_enabled=False,
+    ),
+    companion_nodes=(
+        RobotNode(
+            "development",
+            "开发扩展电脑",
+            "10.192.1.4",
+            "guest",
+        ),
+    ),
+    service_endpoints=(
+        ServiceEndpoint("portal", "机器人信息页", "http://10.192.1.2:8080"),
+        ServiceEndpoint("logs", "日志服务", None),
+        ServiceEndpoint("websocket", "WebSocket SDK", "ws://10.192.1.2:5000"),
+        ServiceEndpoint("mcp", "MCP", None),
+    ),
+    expected_motor_count=None,
+    expected_imu_hz=500.0,
+    allowed_tools=TRON2_BASELINE_TOOLS,
+    capabilities=(
+        ("status", CapabilityState.SUPPORTED),
+        ("read_only_queries", CapabilityState.SUPPORTED),
+        ("low_level_sdk", CapabilityState.PENDING_VALIDATION),
+        ("movement", CapabilityState.PENDING_VALIDATION),
+        ("action_execution", CapabilityState.UNSUPPORTED),
+        ("calibration", CapabilityState.UNSUPPORTED),
+        ("backlash", CapabilityState.UNSUPPORTED),
+        ("audio_control", CapabilityState.UNSUPPORTED),
+        ("led_control", CapabilityState.PENDING_VALIDATION),
+        ("hand_fatigue", CapabilityState.UNSUPPORTED),
+        ("mcp", CapabilityState.UNSUPPORTED),
+    ),
+    acceptance_check_keys=(
+        "wifi",
+        "portal",
+        "companion_ssh",
+        "companion_time",
+    ),
+)
+
+
+ROBOT_PROFILES = (OLI_PROFILE, L04_PROFILE, TRON2_PROFILE)
 
 
 def _normalize_robot_identifier(value: str) -> str:

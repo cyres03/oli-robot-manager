@@ -4,7 +4,7 @@ from datetime import datetime
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from config import ROBOT_CONFIG
-from models.robot_profile import L04_PROFILE, OLI_PROFILE
+from models.robot_profile import L04_PROFILE, OLI_PROFILE, TRON2_PROFILE
 from ui.panels.acceptance_test_panel import (
     BEIJING_TIMEZONE,
     AcceptanceTestPanel,
@@ -32,6 +32,48 @@ def test_oli_checks_preserve_perception_topology_and_mcp():
     assert _check(checks, "companion_ssh").tool == "guest@10.192.1.3"
     assert _check(checks, "mcp").kind == "http"
     assert "lsusb" in _check(checks, "camera").command
+
+
+def test_tron2_checks_match_documented_read_only_baseline():
+    checks = build_acceptance_checks(TRON2_PROFILE)
+
+    assert [check.key for check in checks] == [
+        "wifi",
+        "portal",
+        "companion_ssh",
+        "companion_time",
+    ]
+    assert _check(checks, "companion_ssh").tool == "guest@10.192.1.4"
+    assert _check(checks, "companion_time").target == "companion"
+    assert all(check.kind in {"local", "http", "ssh"} for check in checks)
+    assert all(check.key not in {"logs", "mcp", "main_ssh", "cpu", "camera", "imu"} for check in checks)
+
+    diagnostic_keys = [
+        check.key for check in build_diagnostic_checks(TRON2_PROFILE)
+    ]
+    assert diagnostic_keys == [
+        "robot_info",
+        "wifi",
+        "portal",
+        "companion_ssh",
+        "companion_time",
+    ]
+    assert "mros_services" not in diagnostic_keys
+
+
+def test_tron2_panel_disables_unsupported_log_service(qtbot):
+    panel = AcceptanceTestPanel(profile=TRON2_PROFILE)
+    qtbot.addWidget(panel)
+
+    assert not panel.log_combo.isEnabled()
+    assert not panel.refresh_logs_btn.isEnabled()
+    assert not panel.download_log_btn.isEnabled()
+    assert panel.log_status.text() == "当前型号未提供 8090 日志服务"
+
+    panel.apply_profile(OLI_PROFILE)
+    assert panel.log_combo.isEnabled()
+    assert panel.refresh_logs_btn.isEnabled()
+    assert panel.download_log_btn.isEnabled()
 
 
 def test_diagnostic_checks_add_identity_status_and_mros_without_writes():

@@ -258,12 +258,42 @@ def build_acceptance_checks(profile: RobotProfile) -> list[AcceptanceCheck]:
                 target="companion", command=camera_command,
             ),
         })
+    if profile.key == "tron2" and companion:
+        checks.update({
+            "companion_ssh": AcceptanceCheck(
+                "companion_ssh",
+                "SSH",
+                f"{companion.label} SSH 登录",
+                f"{companion.username}@{companion.host}",
+                "ssh",
+                target="companion",
+                command="hostname; uname -a",
+            ),
+            "companion_time": AcceptanceCheck(
+                "companion_time",
+                companion.label,
+                f"{companion.label}系统时间",
+                f"{companion.username}@{companion.host}",
+                "ssh",
+                target="companion",
+                command=TIME_CHECK_COMMAND,
+            ),
+            "cpu": AcceptanceCheck(
+                "cpu",
+                companion.label,
+                f"{companion.label} CPU 核心数",
+                "SSH",
+                "ssh",
+                target="companion",
+                command="nproc",
+            ),
+        })
     return [checks[key] for key in profile.acceptance_check_keys if key in checks]
 
 
 def build_diagnostic_checks(profile: RobotProfile) -> list[AcceptanceCheck]:
     portal = profile.service("portal")
-    return [
+    checks = [
         AcceptanceCheck(
             "robot_info",
             "身份/状态",
@@ -273,7 +303,9 @@ def build_diagnostic_checks(profile: RobotProfile) -> list[AcceptanceCheck]:
             url=portal.url or "",
         ),
         *build_acceptance_checks(profile),
-        AcceptanceCheck(
+    ]
+    if profile.key != "tron2":
+        checks.append(AcceptanceCheck(
             "mros_services",
             "mROS",
             "mROS 服务列表快照",
@@ -281,8 +313,8 @@ def build_diagnostic_checks(profile: RobotProfile) -> list[AcceptanceCheck]:
             "ssh",
             target="main",
             command=MROS_SERVICE_LIST_COMMAND,
-        ),
-    ]
+        ))
+    return checks
 
 
 class BeijingTimeWorker(QThread):
@@ -473,6 +505,7 @@ class AcceptanceTestPanel(QWidget):
         self.summary_label.setText(f"{self._profile.display_name} · 就绪")
         self.export_diagnostic_btn.setEnabled(False)
         self.diagnostic_status.setText("尚未生成诊断包")
+        self._apply_service_availability()
 
     def _build_ui(self):
         self.setStyleSheet(
@@ -530,13 +563,13 @@ class AcceptanceTestPanel(QWidget):
         self.log_combo.setStyleSheet("background: #FFFFFF; border: 1px solid #E5E6EB; border-radius: 6px; padding: 6px 10px;")
         top_tools.addWidget(QLabel("8090 日志"), 2, 0)
         top_tools.addWidget(self.log_combo, 3, 0, 1, 2)
-        refresh_logs_btn = QPushButton("刷新日志列表")
-        refresh_logs_btn.clicked.connect(self.refresh_log_list)
-        top_tools.addWidget(refresh_logs_btn, 3, 2)
-        download_log_btn = QPushButton("下载并分析")
-        download_log_btn.setObjectName("primaryBtn")
-        download_log_btn.clicked.connect(self.download_selected_log)
-        top_tools.addWidget(download_log_btn, 3, 3)
+        self.refresh_logs_btn = QPushButton("刷新日志列表")
+        self.refresh_logs_btn.clicked.connect(self.refresh_log_list)
+        top_tools.addWidget(self.refresh_logs_btn, 3, 2)
+        self.download_log_btn = QPushButton("下载并分析")
+        self.download_log_btn.setObjectName("primaryBtn")
+        self.download_log_btn.clicked.connect(self.download_selected_log)
+        top_tools.addWidget(self.download_log_btn, 3, 3)
         self.log_status = QLabel("未加载日志列表")
         self.log_status.setStyleSheet("color: #86909C; background: transparent;")
         top_tools.addWidget(self.log_status, 3, 4)
@@ -624,6 +657,18 @@ class AcceptanceTestPanel(QWidget):
         if self._power_cycle_service is not None:
             self.power_cycle_tab = PowerCyclePanel(self._power_cycle_service)
             self.tabs.addTab(self.power_cycle_tab, "断电恢复")
+        self._apply_service_availability()
+
+    def _apply_service_availability(self):
+        if not hasattr(self, "refresh_logs_btn"):
+            return
+        logs_supported = self._profile.service("logs").supported
+        self.log_combo.setEnabled(logs_supported)
+        self.refresh_logs_btn.setEnabled(logs_supported)
+        self.download_log_btn.setEnabled(logs_supported)
+        if not logs_supported:
+            self.log_combo.clear()
+            self.log_status.setText("当前型号未提供 8090 日志服务")
 
     def _populate_checks(self):
         self.check_table.setRowCount(len(self.CHECKS))
@@ -838,6 +883,9 @@ class AcceptanceTestPanel(QWidget):
         return f"多数 {majority_version}（{len(majority_motors)} 个）；差异 {'; '.join(different)}"
 
     def refresh_log_list(self):
+        if not self._profile.service("logs").supported:
+            self.log_status.setText("当前型号未提供 8090 日志服务")
+            return
         self.log_status.setText("正在读取 8090 日志列表...")
         generation = self._profile_generation
         worker = LogListWorker(ROBOT_CONFIG.logs_url, self)
@@ -864,6 +912,9 @@ class AcceptanceTestPanel(QWidget):
         self.log_message.emit(f"[验收] 8090 日志列表: {len(log_names)} 个", "info")
 
     def download_selected_log(self):
+        if not self._profile.service("logs").supported:
+            self.log_status.setText("当前型号未提供 8090 日志服务")
+            return
         log_name = self.log_combo.currentText().strip()
         if not log_name:
             self.log_status.setText("请先刷新并选择日志")

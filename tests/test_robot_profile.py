@@ -2,6 +2,7 @@ from models.robot_profile import (
     CapabilityState,
     L04_PROFILE,
     OLI_PROFILE,
+    TRON2_PROFILE,
     RobotIdentityStatus,
     resolve_robot_identity,
     resolve_robot_profile,
@@ -69,3 +70,26 @@ def test_oli_profile_preserves_existing_control_tools():
     assert resolve_robot_profile("HU_D04_01_121") is OLI_PROFILE
     assert OLI_PROFILE.service("mcp").supported is True
     assert OLI_PROFILE.allows_tool("execute_dance") is True
+
+
+def test_resolves_tron2_identity_with_conservative_baseline():
+    for accid in ("WF_TRON2_001", "WF_TRON2A_185"):
+        identity = resolve_robot_identity([accid], accid)
+
+        assert identity.status == RobotIdentityStatus.READY
+        assert identity.accid == accid
+        assert identity.profile is TRON2_PROFILE
+
+    assert TRON2_PROFILE.main_node.host == "10.192.1.2"
+    assert TRON2_PROFILE.main_node.ssh_enabled is False
+    assert TRON2_PROFILE.companion_nodes[0].host == "10.192.1.4"
+    assert TRON2_PROFILE.companion_nodes[0].ssh_enabled is True
+    assert TRON2_PROFILE.companion_nodes[0].username == "guest"
+    assert TRON2_PROFILE.service("portal").supported is True
+    assert TRON2_PROFILE.service("websocket").supported is True
+    assert TRON2_PROFILE.service("logs").supported is False
+    assert TRON2_PROFILE.service("mcp").supported is False
+    assert TRON2_PROFILE.allowed_tools == frozenset()
+    assert TRON2_PROFILE.capability("movement") == CapabilityState.PENDING_VALIDATION
+    assert TRON2_PROFILE.capability("calibration") == CapabilityState.UNSUPPORTED
+    assert TRON2_PROFILE.capability("hand_fatigue") == CapabilityState.UNSUPPORTED

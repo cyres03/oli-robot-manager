@@ -264,7 +264,14 @@ class Sidebar(QFrame):
         self._wifi_timer.start(5000)
 
     def apply_profile(self, profile: RobotProfile | None):
-        nodes = [profile.main_node, *profile.companion_nodes] if profile else []
+        nodes = (
+            [
+                node
+                for node in (profile.main_node, *profile.companion_nodes)
+                if node.ssh_enabled
+            ]
+            if profile else []
+        )
         self.ssh_section.setVisible(bool(nodes))
         for index, button in enumerate(self._ssh_buttons):
             try:

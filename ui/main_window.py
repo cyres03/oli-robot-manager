@@ -20,7 +20,7 @@ from network.ssh_client import current_robot_id
 from workers.mcp_worker import McpWorker
 from workers.ssh_key_install_worker import SshKeyInstallWorker
 from workers.ssh_worker import SshWorker
-from models.robot_profile import RobotIdentity, RobotIdentityStatus
+from models.robot_profile import RobotIdentity, RobotIdentityStatus, RobotProfile
 from models.workspace import CONNECTION_WORKSPACE, resolve_workspace
 from ui.widgets.sidebar import Sidebar
 from ui.widgets.status_bar_widget import StatusBarWidget
@@ -229,14 +229,10 @@ class MainWindow(QMainWindow):
         )
 
         # Robot monitor → status banner
-        self._robot_monitor.status_updated.connect(self.status_banner.update_status)
-        self._robot_monitor.status_updated.connect(self.control_panel.update_robot_status)
+        self._robot_monitor.status_updated.connect(self._on_monitored_robot_status)
         self._robot_monitor.connected.connect(
             lambda ok: self.status_banner.set_disconnected() if not ok else None)
         self._robot_monitor.connected.connect(self._connection_service.update_ws)
-        self._robot_monitor.status_updated.connect(
-            lambda _info: self._connection_service.update_ws(True))
-        self._robot_monitor.status_updated.connect(self._on_robot_status)
         self.acceptance_panel.ssh_connection_changed.connect(self._connection_service.update_ssh)
         self.acceptance_panel.ssh_authorization_required.connect(
             self._authorize_ssh_for_acceptance
@@ -292,6 +288,12 @@ class MainWindow(QMainWindow):
         workspace = resolve_workspace(profile)
         allowed_tools = profile.allowed_tools if profile else frozenset()
 
+        if self._robot_monitor:
+            self._robot_monitor.update_target(
+                ROBOT_CONFIG.websocket_url if ready else "",
+                ROBOT_CONFIG.ws_accid if ready else "",
+            )
+
         self._connection_service.update_ssh(False)
         if self._mcp_worker:
             self._mcp_worker.update_target(
@@ -338,8 +340,7 @@ class MainWindow(QMainWindow):
             if status_message and (initial or previous_accid != identity.accid):
                 self.terminal.append_log(f"[系统] {status_message}", "pass")
             if initial or previous_accid != identity.accid:
-                self._dance_service.load_dances()
-                self._dance_service.load_motions()
+                self._load_profile_resources(profile)
             return
 
         self._dance_service.switch_resource_context("", "", "")
@@ -500,8 +501,7 @@ class MainWindow(QMainWindow):
                 ROBOT_CONFIG.ws_accid,
                 firmware_version,
             )
-            self._dance_service.load_dances()
-            self._dance_service.load_motions()
+            self._load_profile_resources(ROBOT_CONFIG.active_profile)
             if self._test_case_service:
                 self._test_case_service.apply_context(
                     ROBOT_CONFIG.active_profile,
@@ -516,6 +516,32 @@ class MainWindow(QMainWindow):
             self._last_status_log_key = log_key
             self._last_status_log_at = now
             self.terminal.append_log(f"[状态] {status} | 电量 {battery}", "info")
+
+    def _on_monitored_robot_status(self, info: dict):
+        if not self._robot_monitor:
+            return
+        if (
+            info.get("_target_accid") != ROBOT_CONFIG.ws_accid
+            or info.get("_target_generation")
+            != self._robot_monitor.target_generation
+            or (
+                info.get("_reported_accid")
+                and info.get("_reported_accid") != ROBOT_CONFIG.ws_accid
+            )
+        ):
+            return
+        self.status_banner.update_status(info)
+        self.control_panel.update_robot_status(info)
+        self._connection_service.update_ws(True)
+        self._on_robot_status(info)
+
+    def _load_profile_resources(self, profile: RobotProfile | None):
+        if not profile:
+            return
+        if profile.allows_tool("get_dances"):
+            self._dance_service.load_dances()
+        if profile.allows_tool("get_motions"):
+            self._dance_service.load_motions()
 
     def _on_calibrate_request(self, cal_type: str):
         if cal_type == "mission_engine":
