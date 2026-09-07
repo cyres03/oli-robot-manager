@@ -1,0 +1,171 @@
+name: 机器人产品基线
+
+description: 新增或修正机器人型号、Profile、身份识别、网络拓扑和能力边界
+
+title: "[Product Baseline] "
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        本表是编码前门禁。身份格式、SSID、8080 SN、节点拓扑或能力边界任一未确认时，只能调研，不能修改 Profile、Workspace、Wi-Fi 正则或控制工具白名单。
+
+        不要填写密码、令牌、私钥或客户敏感信息。
+
+  - type: input
+    id: product_name
+    attributes:
+      label: 产品正式名称
+      placeholder: 例如 TRON2 EDU
+    validations:
+      required: true
+
+  - type: input
+    id: source
+    attributes:
+      label: 官方依据
+      description: 文档 URL、版本、修订日期；当天无法访问时必须说明。
+      placeholder: URL；V0.2；2026-07-21；今日可访问/不可访问
+    validations:
+      required: true
+
+  - type: textarea
+    id: canonical_identity
+    attributes:
+      label: 正式身份格式
+      description: 精确填写型号、完整 ACCID/SN 规则和环境变量值。
+      placeholder: |
+        型号字符串：TRON2A
+        ACCID/SN 正则：TRON2A_<数字>
+        ROBOT_TYPE：TRON2A
+    validations:
+      required: true
+
+  - type: textarea
+    id: positive_examples
+    attributes:
+      label: 必须识别的正例
+      description: 至少提供真实完整 SN、Wi-Fi SSID 和 8080 返回 SN 各一个。
+      placeholder: |
+        完整 SN：TRON2A_185
+        SSID：TRON2A_185_5G、TRON2A_185_2.4G
+        8080 SN：TRON2A_185
+    validations:
+      required: true
+
+  - type: textarea
+    id: negative_examples
+    attributes:
+      label: 必须拒绝的负例
+      description: 填写相似但不合法、旧格式和其他产品示例。
+      placeholder: |
+        TRON2AB_lab
+        TRON2A_abc
+        WF_TRON2A_185
+    validations:
+      required: true
+
+  - type: dropdown
+    id: legacy_compatibility
+    attributes:
+      label: 旧身份格式兼容决策
+      description: 必须明确选择，禁止实现时临时猜测。
+      options:
+        - 不兼容，旧格式必须拒绝
+        - 兼容，但仅作为显式 legacy alias
+        - 尚未确认，阻塞编码
+    validations:
+      required: true
+
+  - type: textarea
+    id: portal_evidence
+    attributes:
+      label: 8080 身份证据
+      description: 填写实际端点及脱敏响应中的 SN/型号字段；没有证据填“未确认，阻塞编码”。
+      placeholder: |
+        端点：http://10.192.1.2:8080/get_robot_info
+        字段：sn=TRON2A_185
+    validations:
+      required: true
+
+  - type: textarea
+    id: topology
+    attributes:
+      label: 节点与 SSH 拓扑
+      description: 每个节点填写 role、标签、IP、用户、SSH 是否开放；未知项明确写未确认。
+      placeholder: |
+        main | 机器人主机 | 10.192.1.2 | 用户未确认 | SSH 不开放
+        development | 开发扩展电脑 | 10.192.1.4 | guest | SSH 开放
+    validations:
+      required: true
+
+  - type: textarea
+    id: services
+    attributes:
+      label: 服务端点矩阵
+      description: 逐项标明 Supported / Pending validation / Unsupported，并给出证据。
+      placeholder: |
+        8080 portal | Supported | 官方文档
+        5000 WebSocket | Supported endpoint / control Pending validation | 官方文档
+        8090 logs | Unsupported | 无官方证据
+        MCP | Unsupported | 无官方证据
+    validations:
+      required: true
+
+  - type: textarea
+    id: capabilities
+    attributes:
+      label: 能力与工具白名单
+      description: 分别填写 supported、pending_validation、unsupported，以及允许的工具名；未验证控制默认不开放。
+      placeholder: |
+        supported：status、read_only_queries
+        pending_validation：movement、low_level_sdk
+        unsupported：calibration、MCP
+        allowed_tools：空
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_baseline
+    attributes:
+      label: 只读验收基线
+      description: 只列有明确预期值的检查；未知 CPU/电机数不得硬编码。
+      placeholder: |
+        Wi-Fi 身份
+        8080 SN
+        开发电脑 SSH
+        开发电脑系统时间
+    validations:
+      required: true
+
+  - type: textarea
+    id: workspace
+    attributes:
+      label: 工作区与可见入口
+      description: 明确默认页面、显示页面、隐藏页面和 SSH 快捷入口。
+    validations:
+      required: true
+
+  - type: textarea
+    id: safety
+    attributes:
+      label: 真机与安全边界
+      description: 是否执行运动/写操作、测试工况、停止方式；纯基线填“只读，不执行运动或写操作”。
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: ready_gate
+    attributes:
+      label: Definition of Ready
+      options:
+        - label: 正式身份格式已由现场或官方证据确认，不是从示例名称推断
+          required: true
+        - label: 正例、负例和旧格式兼容决策均已填写
+          required: true
+        - label: Wi-Fi SSID 与 8080 SN 的一致性规则已确定
+          required: true
+        - label: 节点、服务、能力和工作区矩阵已确定
+          required: true
+        - label: 未确认项已标记为阻塞或 Pending validation，不会在实现中猜测
+          required: true
