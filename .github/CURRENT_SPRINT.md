@@ -15,9 +15,9 @@ Robot Manager 能安全识别 TRON2、进入独立工作区并执行官方文档
 |-------|------|--------|------|------|
 | #58 | Task | 5 | Cross-platform | Done |
 | #60 | Bug | 2 | Cross-platform | Done |
-| #62 | Task | 2 | Cross-platform | In Review |
+| #62 | Task | 2 | Cross-platform | Done |
 
-当前 WIP：1
+当前 WIP：0
 
 ## Story 拆分
 
@@ -55,7 +55,7 @@ Robot Manager 能安全识别 TRON2、进入独立工作区并执行官方文档
 - 静态验证：`pip check`、`compileall`、编辑器诊断通过
 - Windows/Linux CI：通过（PR #59）
 - #60 验证：238 passed；Windows/Linux CI 通过（PR #61）
-- #62 本地验证：Issue 表单和 Copilot 指令 YAML 解析通过；238 passed；PR CI 待验证
+- #62 验证：Issue 表单和 Copilot 指令 YAML 解析通过；238 passed；Windows/Linux CI 通过（PR #63）
 - 真机：未执行运动或写操作
 - 官方文档：V0.2 已核验内容建立基线；2026-09-07 官网正文受第三方跳转影响，待恢复后复核
 
