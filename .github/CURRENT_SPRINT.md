@@ -14,20 +14,22 @@ Robot Manager 能安全识别 TRON2、进入独立工作区并执行官方文档
 | Issue | 类型 | 故事点 | 平台 | 状态 |
 |-------|------|--------|------|------|
 | #58 | Task | 5 | Cross-platform | Done |
+| #60 | Bug | 2 | Cross-platform | Done |
 
 当前 WIP：0
 
 ## Story 拆分
 
-- TRON2 Profile 与 `WF_TRON2_*` / `WF_TRON2A_*` 身份识别
+- TRON2 Profile 与 `TRON2A_*` 身份识别
 - TRON2 独立工作区与导航隔离
 - 官方拓扑端点与 `.4` 开发电脑 SSH 基线
 - 只读验收/诊断项和未支持服务 UI 门控
 - 产品基线文档、使用说明和维护手册更新
+- #60：纠正初版误写的 `WF_TRON2*` 身份，并收紧 Wi-Fi 自动连接格式
 
 ## 验收重点
 
-- 两类 TRON2 SN 前缀均解析到 `tron2` Profile
+- `TRON2A_*` SN 前缀解析到 `tron2` Profile，旧 `WF_TRON2*` 不再冒充正式身份
 - 默认进入 TRON2 验收页
 - 不显示舞蹈、控制、测试用例、健康检查或校零入口
 - 工具白名单为空，不加载隐藏动作资源
@@ -46,9 +48,10 @@ Robot Manager 能安全识别 TRON2、进入独立工作区并执行官方文档
 ## Sprint Review
 
 - Sprint Goal：达成
-- 自动化测试：234 passed
+- 自动化测试：238 passed
 - 静态验证：`pip check`、`compileall`、编辑器诊断通过
 - Windows/Linux CI：通过（PR #59）
+- #60 验证：238 passed；Windows/Linux CI 通过（PR #61）
 - 真机：未执行运动或写操作
 - 官方文档：V0.2 已核验内容建立基线；2026-09-07 官网正文受第三方跳转影响，待恢复后复核
 

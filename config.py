@@ -107,7 +107,7 @@ def detect_accid_from_wifi() -> str | None:
     Examples:
     HU_D04_01_303_5G -> HU_D04_01_303
     HU_D04_01_303_2.4G -> HU_D04_01_303
-    WF_TRON2A_001 -> WF_TRON2A_001
+    TRON2A_001 -> TRON2A_001
     """
     identity = detect_robot_identity()
     return identity.accid if identity.ready else None
@@ -129,8 +129,7 @@ class RobotConfig:
     )
     wifi_ssid_patterns: tuple[str, ...] = (
         "HU_",
-        "WF_TRON2A",
-        "WF_TRON2",
+        "TRON2A",
         "WF_",
     )
     wifi_password: str = field(

@@ -73,12 +73,15 @@ def test_oli_profile_preserves_existing_control_tools():
 
 
 def test_resolves_tron2_identity_with_conservative_baseline():
-    for accid in ("WF_TRON2_001", "WF_TRON2A_185"):
-        identity = resolve_robot_identity([accid], accid)
+    accid = "TRON2A_185"
+    identity = resolve_robot_identity([accid], accid)
 
-        assert identity.status == RobotIdentityStatus.READY
-        assert identity.accid == accid
-        assert identity.profile is TRON2_PROFILE
+    assert identity.status == RobotIdentityStatus.READY
+    assert identity.accid == accid
+    assert identity.profile is TRON2_PROFILE
+    assert TRON2_PROFILE.matches("TRON2A_185") is True
+    assert TRON2_PROFILE.matches("TRON2A_invalid") is False
+    assert resolve_robot_profile("WF_TRON2A_185") is None
 
     assert TRON2_PROFILE.main_node.host == "10.192.1.2"
     assert TRON2_PROFILE.main_node.ssh_enabled is False
@@ -93,3 +96,25 @@ def test_resolves_tron2_identity_with_conservative_baseline():
     assert TRON2_PROFILE.capability("movement") == CapabilityState.PENDING_VALIDATION
     assert TRON2_PROFILE.capability("calibration") == CapabilityState.UNSUPPORTED
     assert TRON2_PROFILE.capability("hand_fatigue") == CapabilityState.UNSUPPORTED
+
+
+def test_tron2a_wifi_band_matches_portal_identity():
+    for ssid in ("TRON2A_185_5G", "TRON2A_185_2.4G"):
+        identity = resolve_robot_identity(
+            [ssid],
+            "TRON2A_185",
+        )
+
+        assert identity.status == RobotIdentityStatus.READY
+        assert identity.accid == "TRON2A_185"
+        assert identity.profile is TRON2_PROFILE
+
+
+def test_tron2a_rejects_legacy_wf_portal_identity():
+    identity = resolve_robot_identity(
+        ["TRON2A_185_5G"],
+        "WF_TRON2A_185",
+    )
+
+    assert identity.status == RobotIdentityStatus.MISMATCH
+    assert identity.profile is None

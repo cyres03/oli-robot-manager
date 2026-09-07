@@ -53,11 +53,18 @@ class RobotProfile:
     allowed_tools: frozenset[str]
     capabilities: tuple[tuple[str, CapabilityState], ...]
     acceptance_check_keys: tuple[str, ...]
+    identifier_pattern: str = ""
     allow_cpu_repair: bool = False
     allow_time_repair: bool = False
 
     def matches(self, identifier: str) -> bool:
         normalized = identifier.upper()
+        if self.identifier_pattern:
+            return bool(re.fullmatch(
+                self.identifier_pattern,
+                normalized,
+                flags=re.IGNORECASE,
+            ))
         return any(
             normalized == prefix.upper() or normalized.startswith(prefix.upper() + "_")
             for prefix in self.model_prefixes
@@ -207,8 +214,8 @@ L04_PROFILE = RobotProfile(
 TRON2_PROFILE = RobotProfile(
     key="tron2",
     display_name="TRON2 EDU",
-    model_prefixes=("WF_TRON2", "WF_TRON2A"),
-    ssid_prefixes=("WF_TRON2", "WF_TRON2A"),
+    model_prefixes=("TRON2A",),
+    ssid_prefixes=("TRON2A",),
     main_node=RobotNode(
         "main",
         "机器人主机",
@@ -252,6 +259,7 @@ TRON2_PROFILE = RobotProfile(
         "companion_ssh",
         "companion_time",
     ),
+    identifier_pattern=r"TRON2A_\d+",
 )
 
 
@@ -269,7 +277,7 @@ def extract_robot_accid(text: str | None) -> str | None:
     normalized = _normalize_robot_identifier(text)
     patterns = (
         r"(HU_[A-Z0-9]+(?:_[A-Z0-9]+){1,3})",
-        r"(WF_TRON2[A-Z]?_\d+)",
+        r"(?<![A-Z0-9_])(TRON2A_\d+)(?![A-Z0-9_])",
         r"(WF_[A-Z0-9]+(?:_[A-Z0-9]+)+)",
     )
     for pattern in patterns:

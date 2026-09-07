@@ -84,13 +84,13 @@ def test_worker_blocks_l04_control_and_drops_stale_queue(qapp):
 
 def test_applying_tron2_profile_updates_documented_endpoints():
     identity = config.resolve_robot_identity(
-        ["WF_TRON2A_185"],
-        "WF_TRON2A_185",
+        ["TRON2A_185"],
+        "TRON2A_185",
     )
     robot_config = RobotConfig()
 
     assert robot_config.apply_identity(identity) is True
-    assert robot_config.ws_accid == "WF_TRON2A_185"
+    assert robot_config.ws_accid == "TRON2A_185"
     assert robot_config.profile_key == "tron2"
     assert robot_config.main_control_ip == "10.192.1.2"
     assert robot_config.perception_ip == "10.192.1.4"
@@ -106,7 +106,7 @@ def test_applying_tron2_profile_updates_documented_endpoints():
 def test_worker_blocks_all_tron2_tools(qapp):
     worker = McpWorker(
         "ws://10.192.1.2:5000",
-        "WF_TRON2A_185",
+        "TRON2A_185",
         allowed_tools=TRON2_PROFILE.allowed_tools,
     )
     errors = []

@@ -4,7 +4,7 @@ Wraps QWebSocket for persistent connection and JSON message protocol.
 
 Request format:
 {
-    "accid": "WF_TRON2A_001",
+    "accid": "TRON2A_001",
     "title": "request_<action>",
     "timestamp": <unix_ms>,
     "guid": "<uuid-hex>",
