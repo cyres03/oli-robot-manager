@@ -55,6 +55,7 @@ class DanceService(QObject):
     motion_list_loaded = pyqtSignal(list)              # [{motion_index, motion_name_cn, motion_name_en}, ...]
     dance_executed = pyqtSignal(str, int)              # name, new_count
     motion_executed = pyqtSignal(str, int)             # name, new_count
+    count_reset = pyqtSignal(str, str, int)            # name, category, new_count
     dance_target_completed = pyqtSignal(str, int, str)  # name, count, robot_accid
     sequence_step_executed = pyqtSignal(int, int)      # step_index, total_steps
     sequence_finished = pyqtSignal(str)                # sequence_name
@@ -67,7 +68,7 @@ class DanceService(QObject):
         self._mcp = mcp_worker
         self._count_repo = DanceCountRepository()
         self._seq_repo = SequenceRepository()
-        self._counts: dict[tuple[str, str], int] = {}
+        self._counts: dict[tuple[str, str, str], int] = {}
         self._dances: list[dict] = []
         self._motions: list[dict] = []
         self._resource_context: ResourceContext | None = None
@@ -285,21 +286,39 @@ class DanceService(QObject):
 
     # ---- Count tracking ----
 
-    def get_count(self, name: str) -> int:
-        key = (ROBOT_CONFIG.ws_accid, name)
+    def get_count(self, name: str, category: str) -> int:
+        key = (ROBOT_CONFIG.ws_accid, name, category)
         if key not in self._counts:
-            self._counts[key] = self._count_repo.get_count(ROBOT_CONFIG.ws_accid, name)
+            self._counts[key] = self._count_repo.get_count(
+                ROBOT_CONFIG.ws_accid, name, category,
+            )
         return self._counts[key]
 
     def _increment_count(self, name: str, category: str) -> int:
         robot_accid = ROBOT_CONFIG.ws_accid
         new_count = self._count_repo.increment(robot_accid, name, category)
-        self._counts[(robot_accid, name)] = new_count
+        self._counts[(robot_accid, name, category)] = new_count
         return new_count
+
+    def reset_count(self, name: str, category: str) -> bool:
+        robot_accid = ROBOT_CONFIG.ws_accid
+        try:
+            reset_succeeded = self._count_repo.reset(robot_accid, name, category)
+        except Exception as exc:
+            self.error_occurred.emit(f"清零 {name} 执行次数失败: {exc}")
+            return False
+        if not reset_succeeded:
+            self.error_occurred.emit(f"未找到 {name} 的执行次数记录")
+            return False
+        self._counts[(robot_accid, name, category)] = 0
+        self.count_reset.emit(name, category, 0)
+        return True
 
     def load_all_counts(self):
         for row in self._count_repo.get_all_counts():
-            self._counts[(row.get("robot_accid", "__legacy__"), row["name"])] = row["count"]
+            self._counts[
+                (row.get("robot_accid", "__legacy__"), row["name"], row["category"])
+            ] = row["count"]
 
     # ---- Sequence management ----
 

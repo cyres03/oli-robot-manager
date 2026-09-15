@@ -20,24 +20,44 @@ class DanceCountRepository:
         conn.execute(
             """INSERT INTO dance_counts (robot_accid, name, count, category, last_executed)
                VALUES (?, ?, 1, ?, ?)
-               ON CONFLICT(robot_accid, name) DO UPDATE SET
+                    ON CONFLICT(robot_accid, name, category) DO UPDATE SET
                count = count + 1, last_executed = excluded.last_executed""",
             (robot_accid, name, category, now),
         )
         conn.commit()
         row = conn.execute(
-            "SELECT count FROM dance_counts WHERE robot_accid = ? AND name = ?", (robot_accid, name)
+            "SELECT count FROM dance_counts "
+            "WHERE robot_accid = ? AND name = ? AND category = ?",
+            (robot_accid, name, category),
         ).fetchone()
         conn.close()
         return row["count"] if row else 0
 
-    def get_count(self, robot_accid: str, name: str) -> int:
+    def get_count(self, robot_accid: str, name: str, category: str) -> int:
         conn = self._db.get_connection()
         row = conn.execute(
-            "SELECT count FROM dance_counts WHERE robot_accid = ? AND name = ?", (robot_accid, name)
+            "SELECT count FROM dance_counts "
+            "WHERE robot_accid = ? AND name = ? AND category = ?",
+            (robot_accid, name, category),
         ).fetchone()
         conn.close()
         return row["count"] if row else 0
+
+    def reset(self, robot_accid: str, name: str, category: str) -> bool:
+        conn = self._db.get_connection()
+        try:
+            cursor = conn.execute(
+                "UPDATE dance_counts SET count = 0, last_executed = NULL "
+                "WHERE robot_accid = ? AND name = ? AND category = ?",
+                (robot_accid, name, category),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def get_all_counts(self) -> list[dict]:
         conn = self._db.get_connection()

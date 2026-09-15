@@ -199,6 +199,7 @@ class DanceLibraryPanel(QWidget):
         self._service.dance_executed.connect(self._on_dance_executed)
         self._service.dance_target_completed.connect(self._on_dance_target_completed)
         self._service.motion_executed.connect(self._on_motion_executed)
+        self._service.count_reset.connect(self._on_count_reset)
         self._service.action_state_changed.connect(self._on_action_state_changed)
         self._service.motion_engine_changed.connect(self.motion_engine_btn.setChecked)
         self.sequencer.execute_sequence_clicked.connect(self._on_execute_sequence)
@@ -219,9 +220,10 @@ class DanceLibraryPanel(QWidget):
             cn = d.get("name", "") or d.get("english_name", rc)
             en = d.get("english_name", "")
             dur = d.get("duration", 0)
-            count = self._service.get_count(rc)
+            count = self._service.get_count(rc, "dance")
             card = DanceCard(cn, "dance", count, subtitle=f"{en} · {dur}s" if en else "")
             card.execute_clicked.connect(lambda n=rc: self._request_dance_execution(n))
+            card.reset_clicked.connect(lambda n=rc: self._confirm_reset(n, "dance"))
             card.setEnabled(self._action_ready("execute_dance"))
             self.dance_grid.add_card(card)
             self._dance_cards[rc] = card
@@ -234,7 +236,7 @@ class DanceLibraryPanel(QWidget):
         for m in motions:
             en = m.get("motion_name_en", "")
             cn = m.get("motion_name_cn", "")
-            count = self._service.get_count(en)
+            count = self._service.get_count(en, "motion")
             unavailable_reason = UNRELIABLE_MOTIONS.get(en, "")
             subtitle = unavailable_reason if unavailable_reason else (en if cn else "")
             card = DanceCard(
@@ -250,6 +252,7 @@ class DanceLibraryPanel(QWidget):
                 card.execute_clicked.connect(lambda n=en: self._request_motion_execution(n))
                 if self._profile_key != "hu_l04_01":
                     card.repeat_clicked.connect(lambda n=en: self._service.execute_motion_repeat(n, times=5, delay_ms=2000))
+            card.reset_clicked.connect(lambda n=en: self._confirm_reset(n, "motion"))
             card.setEnabled(self._action_ready("execute_motion") and not unavailable_reason)
             self.motion_grid.add_card(card)
             self._motion_cards[en] = card
@@ -269,6 +272,24 @@ class DanceLibraryPanel(QWidget):
     def _on_motion_executed(self, name: str, count: int):
         if name in self._motion_cards:
             self._motion_cards[name].set_count(count)
+
+    def _confirm_reset(self, name: str, category: str):
+        card_map = self._dance_cards if category == "dance" else self._motion_cards
+        display_name = card_map[name].dance_name if name in card_map else name
+        answer = QMessageBox.question(
+            self,
+            "清零执行次数",
+            f"确定将“{display_name}”的执行次数清零吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._service.reset_count(name, category)
+
+    def _on_count_reset(self, name: str, category: str, count: int):
+        card_map = self._dance_cards if category == "dance" else self._motion_cards
+        if name in card_map:
+            card_map[name].set_count(count)
 
     def _on_action_state_changed(self, running: bool, label: str):
         if running:

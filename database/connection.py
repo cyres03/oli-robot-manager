@@ -29,10 +29,11 @@ class DatabaseConnection:
             CREATE TABLE IF NOT EXISTS dance_counts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 robot_accid TEXT NOT NULL DEFAULT '__legacy__',
-                name TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
                 count INTEGER DEFAULT 0,
                 category TEXT NOT NULL DEFAULT 'dance',
-                last_executed TIMESTAMP
+                last_executed TIMESTAMP,
+                UNIQUE(robot_accid, name, category)
             );
             CREATE TABLE IF NOT EXISTS dance_sequences (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,15 +93,24 @@ class DatabaseConnection:
         """)
         columns = [row[1] for row in conn.execute("PRAGMA table_info(dance_counts)").fetchall()]
         indexes = conn.execute("PRAGMA index_list(dance_counts)").fetchall()
-        has_name_only_unique = False
+        unique_indexes = []
         for row in indexes:
             index_name = row[1]
             is_unique = bool(row[2])
             index_columns = [info[2] for info in conn.execute(f"PRAGMA index_info({index_name})").fetchall()]
-            if is_unique and index_columns == ["name"]:
-                has_name_only_unique = True
-                break
-        needs_migration = "robot_accid" not in columns or has_name_only_unique
+            if is_unique:
+                unique_indexes.append(index_columns)
+        identity_columns = ["robot_accid", "name", "category"]
+        has_legacy_unique = any(
+            index_columns in (["name"], ["robot_accid", "name"])
+            for index_columns in unique_indexes
+        )
+        needs_migration = (
+            "robot_accid" not in columns
+            or "category" not in columns
+            or identity_columns not in unique_indexes
+            or has_legacy_unique
+        )
         if needs_migration:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS dance_counts_new (
@@ -110,7 +120,7 @@ class DatabaseConnection:
                     count INTEGER DEFAULT 0,
                     category TEXT NOT NULL DEFAULT 'dance',
                     last_executed TIMESTAMP,
-                    UNIQUE(robot_accid, name)
+                    UNIQUE(robot_accid, name, category)
                 );
             """)
             if "robot_accid" in columns:
@@ -130,7 +140,8 @@ class DatabaseConnection:
                 ALTER TABLE dance_counts_new RENAME TO dance_counts;
             """)
         conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_dance_counts_robot_name ON dance_counts(robot_accid, name)"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_dance_counts_robot_name_category "
+            "ON dance_counts(robot_accid, name, category)"
         )
         acceptance_columns = {
             row[1]

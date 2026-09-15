@@ -118,7 +118,7 @@ def test_clearing_profile_locks_all_control_commands(qtbot):
 def test_l04_dance_library_allows_single_actions_only_in_walk(qtbot, monkeypatch):
     worker = _worker(L04_PROFILE)
     service = DanceService(worker)
-    monkeypatch.setattr(service, "get_count", lambda _name: 0)
+    monkeypatch.setattr(service, "get_count", lambda _name, _category: 0)
     panel = DanceLibraryPanel(service)
     qtbot.addWidget(panel)
 

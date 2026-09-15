@@ -10,6 +10,7 @@ class ExecuteButton(QPushButton):
 class DanceCard(QFrame):
     execute_clicked = pyqtSignal()
     repeat_clicked = pyqtSignal()
+    reset_clicked = pyqtSignal()
 
     def __init__(self, name: str, category: str = "dance", count: int = 0,
                  subtitle: str = "", repeat_enabled: bool = False,
@@ -50,6 +51,14 @@ class DanceCard(QFrame):
         self.count_badge.setObjectName("countBadge")
         self.count_badge.setFixedHeight(18)
         info_row.addWidget(self.count_badge)
+        self.reset_btn = QPushButton("清零")
+        self.reset_btn.setObjectName("resetCountButton")
+        self.reset_btn.setFixedSize(48, 20)
+        self.reset_btn.setStyleSheet("padding: 0 4px; font-size: 10px;")
+        self.reset_btn.setToolTip("清零执行次数")
+        self.reset_btn.clicked.connect(self.reset_clicked.emit)
+        self.reset_btn.setEnabled(executable)
+        info_row.addWidget(self.reset_btn)
         layout.addLayout(info_row)
 
         layout.addStretch()
