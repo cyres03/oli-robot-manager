@@ -13,9 +13,9 @@
 
 | Issue | 类型 | 故事点 | 平台 | 状态 |
 |-------|------|--------|------|------|
-| #66 | Story | 5 | Cross-platform | In Review |
+| #66 | Story | 5 | Cross-platform | Done |
 
-当前 WIP：1
+当前 WIP：0
 
 ## Story 拆分
 
@@ -44,13 +44,13 @@
 
 ## Sprint Review
 
-- Sprint Goal：代码与真机验收达成，PR/CI 待完成
+- Sprint Goal：达成
 - 自动化测试：255 passed
 - 静态验证：`git diff --check`、`pip check`、`compileall`、编辑器诊断通过
 - 真机原子动作：`Nod` 通过，response+notify success
 - 真机舞蹈：`wakawaka` 通过，终态 response success，无 `notify_dance`
 - 真机恢复：两次动作均确认 `Walk/Walk`
-- Windows/Linux CI：待 PR 验证
+- Windows/Linux CI：通过（PR #67）
 
 ## Retrospective
 
