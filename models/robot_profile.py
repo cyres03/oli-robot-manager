@@ -121,11 +121,13 @@ ALL_ROBOT_TOOLS = frozenset({
     "led_control",
 })
 
-L04_READ_ONLY_TOOLS = frozenset({
+L04_ALLOWED_TOOLS = frozenset({
     "get_dances",
     "get_motions",
     "get_action_library_status",
     "audio_get_wakeup",
+    "execute_dance",
+    "execute_motion",
 })
 
 TRON2_BASELINE_TOOLS = frozenset()
@@ -186,13 +188,13 @@ L04_PROFILE = RobotProfile(
     ),
     expected_motor_count=27,
     expected_imu_hz=500.0,
-    allowed_tools=L04_READ_ONLY_TOOLS,
+    allowed_tools=L04_ALLOWED_TOOLS,
     capabilities=(
         ("status", CapabilityState.SUPPORTED),
         ("read_only_queries", CapabilityState.SUPPORTED),
         ("audio_query", CapabilityState.SUPPORTED),
         ("movement", CapabilityState.PENDING_VALIDATION),
-        ("action_execution", CapabilityState.PENDING_VALIDATION),
+        ("action_execution", CapabilityState.SUPPORTED),
         ("calibration", CapabilityState.PENDING_VALIDATION),
         ("backlash", CapabilityState.PENDING_VALIDATION),
         ("audio_control", CapabilityState.PENDING_VALIDATION),

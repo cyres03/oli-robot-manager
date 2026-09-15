@@ -68,15 +68,19 @@ class McpWorker(QThread):
             self._pending_requests = [
                 item for item in self._pending_requests if item[0] != "set_walk_velocity"
             ]
-            self._pending_requests.append((
-                "set_walk_velocity",
-                {"x": 0.0, "y": 0.0, "yaw": 0.0},
-                self._target_generation,
-                None,
-                self.client.ws_url,
-                self.client.accid,
-                self._profile_key,
-            ))
+            if (
+                self._allowed_tools is None
+                or "set_walk_velocity" in self._allowed_tools
+            ):
+                self._pending_requests.append((
+                    "set_walk_velocity",
+                    {"x": 0.0, "y": 0.0, "yaw": 0.0},
+                    self._target_generation,
+                    None,
+                    self.client.ws_url,
+                    self.client.accid,
+                    self._profile_key,
+                ))
         self._pending_requests.append((
             tool_name,
             arguments,

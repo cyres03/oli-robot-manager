@@ -532,6 +532,8 @@ class MainWindow(QMainWindow):
             return
         self.status_banner.update_status(info)
         self.control_panel.update_robot_status(info)
+        self._dance_service.update_robot_status(info)
+        self.dance_panel.update_robot_status(info)
         self._connection_service.update_ws(True)
         self._on_robot_status(info)
 

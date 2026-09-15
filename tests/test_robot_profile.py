@@ -9,7 +9,7 @@ from models.robot_profile import (
 )
 
 
-def test_resolves_l04_identity_and_read_only_profile():
+def test_resolves_l04_identity_and_action_library_profile():
     identity = resolve_robot_identity(
         ["HU_L04_01_091_5G"],
         "HU_L04_01_091",
@@ -23,8 +23,12 @@ def test_resolves_l04_identity_and_read_only_profile():
     assert identity.profile.expected_motor_count == 27
     assert identity.profile.service("mcp").supported is False
     assert identity.profile.allows_tool("get_motions") is True
-    assert identity.profile.allows_tool("execute_motion") is False
+    assert identity.profile.allows_tool("execute_dance") is True
+    assert identity.profile.allows_tool("execute_motion") is True
+    assert identity.profile.allows_tool("set_motion_engine") is False
+    assert identity.profile.allows_tool("set_walk_velocity") is False
     assert identity.profile.capability("movement") == CapabilityState.PENDING_VALIDATION
+    assert identity.profile.capability("action_execution") == CapabilityState.SUPPORTED
 
 
 def test_same_robot_bands_are_one_target():

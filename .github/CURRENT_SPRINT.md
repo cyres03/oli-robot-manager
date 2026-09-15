@@ -1,66 +1,59 @@
-# Sprint 4：建立 TRON2 产品基线
+# Sprint 5：Luna 动作库真机准入
 
-- 周期：2026-09-07 至 2026-09-13
+- 周期：2026-09-14 至 2026-09-27
 - Product Owner / Developer / Reviewer：cyres03
 - 真机操作人员：cyres03
 - 发布目标：Cross-platform，不创建正式 Tag
 
 ## Sprint Goal
 
-Robot Manager 能安全识别 TRON2、进入独立工作区并执行官方文档支持的只读验收；未验证控制能力保持锁定。
+在不开放 Luna 通用运动控制的前提下，完成舞蹈和原子动作的专项真机验证与最小权限准入。
 
 ## 承诺工作项
 
 | Issue | 类型 | 故事点 | 平台 | 状态 |
 |-------|------|--------|------|------|
-| #58 | Task | 5 | Cross-platform | Done |
-| #60 | Bug | 2 | Cross-platform | Done |
-| #62 | Task | 2 | Cross-platform | Done |
+| #66 | Story | 5 | Cross-platform | In Review |
 
-当前 WIP：0
+当前 WIP：1
 
 ## Story 拆分
 
-- TRON2 Profile 与 `TRON2A_*` 身份识别
-- TRON2 独立工作区与导航隔离
-- 官方拓扑端点与 `.4` 开发电脑 SSH 基线
-- 只读验收/诊断项和未支持服务 UI 门控
-- 产品基线文档、使用说明和维护手册更新
-- #60：纠正初版误写的 `WF_TRON2*` 身份，并收紧 Wi-Fi 自动连接格式
-- #62：把身份、SSID、8080、拓扑、服务和能力事实包固化为编码前门禁
+- Luna 单次舞蹈和原子动作工具准入
+- `Walk` 状态 UI + Service 双层门禁
+- 每次真机动作二次安全确认
+- 动作库自动进入、就绪检测、退出和恢复 Walk
+- Luna 舞蹈终态 response 与 Oli notify 语义隔离
+- 重复动作、序列器、行走和手动动作库入口保持锁定
 
 ## 验收重点
 
-- `TRON2A_*` SN 前缀解析到 `tron2` Profile，旧 `WF_TRON2*` 不再冒充正式身份
-- 默认进入 TRON2 验收页
-- 不显示舞蹈、控制、测试用例、健康检查或校零入口
-- 工具白名单为空，不加载隐藏动作资源
-- 仅检查 Wi-Fi、8080、`.4` SSH 和时间
-- 8090/MCP/`.2` SSH 明确不支持且 UI 不可操作
-- 官方文档事实、风险和后续准入条件形成日期化基线
-- 新增型号的事实未确认时只能 Refinement / Blocked，不能开始修改 Profile
+- `HU_L04_01_084`、固件 `robot-luna-r-1.2.11.20260819121912`
+- `Nod`：response 与完成 notify 均 success，动作后恢复 Walk
+- `wakawaka`：终态 response success，`total_duration=23.437s`、`walk_restored=1`，无 `notify_dance`
+- 状态非 Walk 或目标切换时禁止下发
+- Luna 动作前不插入未准入的零速度命令
+- Oli 原有 response+notify 舞蹈语义不回归
 
 ## 本次不做
 
-- TRON2 运动、灯效、紧急停止和实时控制
-- TRON2 `.2` SSH、8090、MCP
-- 固定电机数量或文档示例维数
-- 校零、Backlash、动作库和硬件疲劳测试
+- Luna 自动站立、行走、坐下、躺下、阻尼和零力矩
+- Luna 连续动作、序列器和手动动作库模式
+- Luna 校零、Backlash、MoveJ/MoveP、UB/WB 和末端硬件
 - 正式版本 Tag
 
 ## Sprint Review
 
-- Sprint Goal：达成
-- 自动化测试：238 passed
-- 静态验证：`pip check`、`compileall`、编辑器诊断通过
-- Windows/Linux CI：通过（PR #59）
-- #60 验证：238 passed；Windows/Linux CI 通过（PR #61）
-- #62 验证：Issue 表单和 Copilot 指令 YAML 解析通过；238 passed；Windows/Linux CI 通过（PR #63）
-- 真机：未执行运动或写操作
-- 官方文档：V0.2 已核验内容建立基线；2026-09-07 官网正文受第三方跳转影响，待恢复后复核
+- Sprint Goal：代码与真机验收达成，PR/CI 待完成
+- 自动化测试：255 passed
+- 静态验证：`git diff --check`、`pip check`、`compileall`、编辑器诊断通过
+- 真机原子动作：`Nod` 通过，response+notify success
+- 真机舞蹈：`wakawaka` 通过，终态 response success，无 `notify_dance`
+- 真机恢复：两次动作均确认 `Walk/Walk`
+- Windows/Linux CI：待 PR 验证
 
 ## Retrospective
 
-- Keep：先建立只读能力矩阵，再决定控制接口准入
-- Stop：把“文档存在接口”等同于“应用已验证支持”
-- Try：后续每个 TRON2 控制能力单独建 Issue 和真机验收记录
+- Keep：先做最短动作、逐步扩大，并以真实 response/notify 作为准入证据
+- Stop：假设同源产品的动作完成通知语义完全相同
+- Try：将产品差异收敛到薄适配器，继续保持工具最小权限

@@ -1,9 +1,12 @@
+from PyQt6.QtWidgets import QMessageBox
+
 from models.robot_profile import L04_PROFILE, OLI_PROFILE
 from services.calibrate_service import CalibrateService
 from services.dance_service import DanceService
 from ui.panels.calibrate_panel import CalibratePanel
 from ui.panels.control_panel import ControlPanel
 from ui.panels.dance_library_panel import DanceLibraryPanel
+from ui.dialogs.message_dialog import AppMessageBox
 from workers.mcp_worker import McpWorker
 
 
@@ -112,7 +115,7 @@ def test_clearing_profile_locks_all_control_commands(qtbot):
     )
 
 
-def test_l04_dance_library_is_query_only(qtbot, monkeypatch):
+def test_l04_dance_library_allows_single_actions_only_in_walk(qtbot, monkeypatch):
     worker = _worker(L04_PROFILE)
     service = DanceService(worker)
     monkeypatch.setattr(service, "get_count", lambda _name: 0)
@@ -120,13 +123,51 @@ def test_l04_dance_library_is_query_only(qtbot, monkeypatch):
     qtbot.addWidget(panel)
 
     panel.apply_profile(L04_PROFILE)
+    panel._populate_dances([{"rc_mapping": "wakawaka", "name": "哇卡哇卡"}])
     panel._populate_motions([{"motion_name_en": "wave", "motion_name_cn": "挥手"}])
 
     assert panel.refresh_dances_btn.isEnabled()
     assert panel.refresh_motions_btn.isEnabled()
     assert not panel.motion_engine_btn.isEnabled()
     assert not panel.tabs.isTabEnabled(2)
+    assert not panel.tabs.isTabEnabled(3)
+    assert not panel._dance_cards["wakawaka"].isEnabled()
     assert not panel._motion_cards["wave"].isEnabled()
+
+    panel.update_robot_status({"robot_status": "Walk"})
+
+    assert panel._dance_cards["wakawaka"].isEnabled()
+    assert panel._motion_cards["wave"].isEnabled()
+    assert not panel.tabs.isTabEnabled(3)
+
+
+def test_l04_action_confirmation_blocks_non_walk_and_can_approve_walk(
+    qtbot,
+    monkeypatch,
+):
+    worker = _worker(L04_PROFILE)
+    service = DanceService(worker)
+    panel = DanceLibraryPanel(service)
+    qtbot.addWidget(panel)
+    panel.apply_profile(L04_PROFILE)
+    warnings = []
+    monkeypatch.setattr(
+        AppMessageBox,
+        "warning",
+        lambda *_args: warnings.append(_args[2]),
+    )
+
+    assert panel._confirm_luna_action("原子动作", "Nod") is False
+    assert "仅允许在 Walk 状态执行" in warnings[-1]
+
+    panel.update_robot_status({"robot_status": "Walk"})
+    monkeypatch.setattr(
+        AppMessageBox,
+        "exec",
+        lambda _self: QMessageBox.StandardButton.Yes,
+    )
+
+    assert panel._confirm_luna_action("原子动作", "Nod") is True
 
 
 def test_l04_calibration_panel_is_locked(qtbot):

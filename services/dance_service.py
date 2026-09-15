@@ -71,6 +71,8 @@ class DanceService(QObject):
         self._dances: list[dict] = []
         self._motions: list[dict] = []
         self._resource_context: ResourceContext | None = None
+        self._robot_status = ""
+        self._authorized_action: tuple[ResourceContext, str, str] | None = None
         self._active_sequence: DanceSequence | None = None
         self._current_step_index = 0
         self._pending_name = ""
@@ -117,6 +119,8 @@ class DanceService(QObject):
         if next_context == self._resource_context:
             return
         self._resource_context = next_context
+        self._robot_status = ""
+        self._authorized_action = None
         self._dances = []
         self._motions = []
         self._active_sequence = None
@@ -125,6 +129,57 @@ class DanceService(QObject):
         self.dance_list_loaded.emit([])
         self.motion_list_loaded.emit([])
         self.action_state_changed.emit(False, "资源会话已切换")
+
+    def update_robot_status(self, info: dict):
+        self._robot_status = str(info.get("robot_status", ""))
+        if self._robot_status != "Walk":
+            self._authorized_action = None
+
+    def authorize_next_action(self, action_type: str, name: str) -> bool:
+        if not self._resource_context:
+            self.error_occurred.emit("机器人资源会话尚未就绪")
+            return False
+        if action_type not in {"dance", "motion"} or not name:
+            self.error_occurred.emit("动作授权参数无效")
+            return False
+        if (
+            self._resource_context.profile_key == "hu_l04_01"
+            and self._robot_status != "Walk"
+        ):
+            self._emit_luna_walk_error()
+            return False
+        self._authorized_action = (self._resource_context, action_type, name)
+        return True
+
+    def _action_execution_ready(self, action_type: str, name: str) -> bool:
+        if (
+            self._resource_context
+            and self._resource_context.profile_key == "hu_l04_01"
+        ):
+            if self._robot_status != "Walk":
+                self._emit_luna_walk_error()
+                return False
+            expected = (self._resource_context, action_type, name)
+            if self._authorized_action != expected:
+                self.error_occurred.emit("Luna L04 单次动作需要重新确认现场安全")
+                return False
+            self._authorized_action = None
+        return True
+
+    def _emit_luna_walk_error(self):
+        self.error_occurred.emit(
+            f"Luna L04 当前状态 {self._robot_status or '未知'}，"
+            "仅允许在 Walk 状态执行动作"
+        )
+
+    def _reject_luna_extended_action(self, operation: str) -> bool:
+        if (
+            self._resource_context
+            and self._resource_context.profile_key == "hu_l04_01"
+        ):
+            self.error_occurred.emit(f"Luna L04 尚未开放{operation}")
+            return True
+        return False
 
     def _resource_request_context(self, resource_type: str) -> ResourceContext:
         if not self._resource_context:
@@ -139,6 +194,8 @@ class DanceService(QObject):
     # ---- Execute ----
 
     def execute_dance(self, rc_mapping: str):
+        if not self._action_execution_ready("dance", rc_mapping):
+            return
         if self._busy and self._active_sequence is None:
             self.error_occurred.emit("当前已有舞蹈/动作在执行，请等待完成后再操作")
             return
@@ -149,6 +206,8 @@ class DanceService(QObject):
         self._mcp.call_tool("execute_dance", {"dance_name": rc_mapping})
 
     def execute_motion(self, name: str):
+        if not self._action_execution_ready("motion", name):
+            return
         if self._busy and self._active_sequence is None:
             self.error_occurred.emit("当前已有舞蹈/动作在执行，请等待完成后再操作")
             return
@@ -163,6 +222,8 @@ class DanceService(QObject):
         self._mcp.call_tool("execute_motion", {"motion_name": name})
 
     def execute_motion_repeat(self, name: str, times: int = 5, delay_ms: int = 5000):
+        if self._reject_luna_extended_action("连续动作"):
+            return
         if self._busy:
             self.error_occurred.emit("当前已有舞蹈/动作在执行，请等待完成后再操作")
             return
@@ -212,9 +273,13 @@ class DanceService(QObject):
         self._repeat_motion_done = 0
 
     def set_walk_velocity(self, x: float, y: float, yaw: float):
+        if self._reject_luna_extended_action("行走控制"):
+            return
         self._mcp.call_tool("set_walk_velocity", {"x": x, "y": y, "yaw": yaw})
 
     def set_motion_engine(self, mode: int = 1):
+        if self._reject_luna_extended_action("手动动作库模式"):
+            return
         self._motion_engine_request = mode
         self._mcp.call_tool("set_motion_engine", {"mode": mode})
 
@@ -257,6 +322,8 @@ class DanceService(QObject):
         self._seq_repo.delete(seq_id)
 
     def execute_sequence(self, sequence: DanceSequence):
+        if self._reject_luna_extended_action("序列器"):
+            return
         if self._busy:
             self.error_occurred.emit("当前已有舞蹈/动作在执行，请等待完成后再运行序列")
             return
@@ -338,25 +405,25 @@ class DanceService(QObject):
                     pass
 
         elif tool_name == "execute_dance":
+            self._emit_restore_warning(result)
             if result.get("success"):
                 count = self._increment_count(self._pending_name, "dance")
                 self.dance_executed.emit(self._pending_name, count)
                 if count == 20:
                     self.dance_target_completed.emit(self._pending_name, count, ROBOT_CONFIG.ws_accid)
-                self._emit_restore_warning(result)
             else:
                 self.error_occurred.emit(f"舞蹈 {self._pending_name} 执行未完成: {result.get('content', ['未知错误'])[0]}")
                 self._active_sequence = None
             self._busy = False
-            self.action_state_changed.emit(False, "已回到拟人行走模式")
+            self.action_state_changed.emit(False, self._action_completion_label(result))
             if self._active_sequence and result.get("success"):
                 self._advance_sequence_after_action()
 
         elif tool_name == "execute_motion":
+            self._emit_restore_warning(result)
             if result.get("success"):
                 count = self._increment_count(self._pending_name, "motion")
                 self.motion_executed.emit(self._pending_name, count)
-                self._emit_restore_warning(result)
                 if self._repeat_motion_name:
                     self._repeat_motion_done += 1
                     if self._repeat_motion_remaining > 0:
@@ -380,7 +447,7 @@ class DanceService(QObject):
                     return
                 self._active_sequence = None
             self._busy = False
-            self.action_state_changed.emit(False, "已回到拟人行走模式")
+            self.action_state_changed.emit(False, self._action_completion_label(result))
             if self._active_sequence and result.get("success"):
                 self._advance_sequence_after_action()
 
@@ -407,16 +474,35 @@ class DanceService(QObject):
             self._advance_and_continue()
 
     def _emit_restore_warning(self, result: dict):
+        data = self._action_result_data(result)
+        post_action = data.get("post_action", {})
+        if post_action and (
+            post_action.get("exit_motion_engine") != "success"
+            or post_action.get("set_walk_mode") != "success"
+        ):
+            self.error_occurred.emit(f"动作已完成，但自动切回拟人行走模式失败: {post_action}")
+
+    def _action_completion_label(self, result: dict) -> str:
+        post_action = self._action_result_data(result).get("post_action", {})
+        if post_action:
+            if (
+                post_action.get("exit_motion_engine") == "success"
+                and post_action.get("set_walk_mode") == "success"
+            ):
+                return "已回到拟人行走模式"
+            return "动作结束，但未确认恢复拟人行走模式"
+        return "动作执行完成" if result.get("success") else "动作执行已停止"
+
+    @staticmethod
+    def _action_result_data(result: dict) -> dict:
         content = result.get("content", [])
         if not content or not isinstance(content[0], str):
-            return
+            return {}
         try:
             data = json.loads(content[0])
         except json.JSONDecodeError:
-            return
-        post_action = data.get("post_action", {})
-        if post_action and post_action.get("set_walk_mode") != "success":
-            self.error_occurred.emit(f"动作已完成，但自动切回拟人行走模式失败: {post_action}")
+            return {}
+        return data if isinstance(data, dict) else {}
 
     # ---- Accessors ----
 

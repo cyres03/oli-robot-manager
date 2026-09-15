@@ -18,6 +18,7 @@ API Reference (per SDK doc):
   4.4.13 request_dance                 → response_dance → notify_dance
 """
 import json
+import math
 import uuid
 import asyncio
 import os
@@ -35,6 +36,31 @@ def _is_walk_mode_ok(data: dict) -> bool:
     if data.get("result") == "success":
         return True
     return data.get("result") == "fail_state_not_allowed" and data.get("current_state") == "Walk"
+
+
+def _is_luna_dance_terminal_response(data: dict) -> bool:
+    total_actions = data.get("total_actions")
+    total_duration = data.get("total_duration")
+    walk_restored = data.get("walk_restored")
+    return (
+        isinstance(total_actions, int)
+        and not isinstance(total_actions, bool)
+        and total_actions > 0
+        and isinstance(total_duration, (int, float))
+        and not isinstance(total_duration, bool)
+        and math.isfinite(total_duration)
+        and total_duration > 0
+        and isinstance(walk_restored, int)
+        and not isinstance(walk_restored, bool)
+        and walk_restored == 1
+    )
+
+
+def _post_action_succeeded(post_action: dict) -> bool:
+    return (
+        post_action.get("exit_motion_engine") == "success"
+        and post_action.get("set_walk_mode") == "success"
+    )
 
 
 class RobotClient:
@@ -297,6 +323,25 @@ class RobotClient:
         return []
 
     def execute_dance(self, rc_mapping: str, timeout: float = 120.0) -> dict:
+        if self.accid.upper().startswith("HU_L04_01_"):
+            resp = self._send_request(
+                "request_dance",
+                {"name": rc_mapping},
+                timeout=timeout,
+            )
+            data = resp.get("data", {})
+            return {
+                "response": data.get("result"),
+                "notify": None,
+                "completion": (
+                    "response"
+                    if _is_luna_dance_terminal_response(data)
+                    else "incomplete_response"
+                ),
+                "total_actions": data.get("total_actions"),
+                "total_duration": data.get("total_duration"),
+                "walk_restored": data.get("walk_restored"),
+            }
         resp, notify = self._send_request_with_notify(
             "request_dance", {"name": rc_mapping}, "notify_dance", timeout=timeout,
         )
@@ -642,9 +687,14 @@ class RobotClient:
                 else:
                     result = {}
                 result.update(self.execute_dance(ws_data.get("name", ""), timeout=240.0))
-                success = result.get("response") == "success" and result.get("notify") == "success"
+                completion_ok = (
+                    result.get("notify") == "success"
+                    or result.get("completion") == "response"
+                )
+                success = result.get("response") == "success" and completion_ok
                 if success and arguments.get("restore_walk_mode", True):
                     result["post_action"] = self._restore_walk_mode_after_action()
+                    success = _post_action_succeeded(result["post_action"])
                 return {"success": success, "content": [json.dumps(result)]}
             if tool_name == "execute_motion":
                 if arguments.get("ensure_action_library", True):
@@ -657,6 +707,7 @@ class RobotClient:
                 success = result.get("response") == "success" and result.get("notify") == "success"
                 if success and arguments.get("restore_walk_mode", True):
                     result["post_action"] = self._restore_walk_mode_after_action()
+                    success = _post_action_succeeded(result["post_action"])
                 return {"success": success, "content": [json.dumps(result)]}
             resp = self._send_request(ws_title, ws_data)
             result = resp.get("data", {}).get("result", "fail")

@@ -260,6 +260,138 @@ def test_late_action_response_does_not_mutate_new_workspace(qapp, monkeypatch):
     assert service._busy is False
 
 
+def test_luna_service_rechecks_walk_before_queueing_action(qapp):
+    worker = McpWorker("ws://robot", "HU_L04_01_084")
+    worker.update_target(
+        "HU_L04_01_084",
+        L04_PROFILE.allowed_tools,
+        "ws://robot",
+        "hu_l04_01",
+    )
+    service = DanceService(worker)
+    service.switch_resource_context("hu_l04_01", "HU_L04_01_084", "v1")
+    errors = []
+    service.error_occurred.connect(errors.append)
+
+    service.update_robot_status({"robot_status": "ZeroTorque"})
+    service.execute_motion("Nod")
+
+    assert worker._pending_requests == []
+    assert "仅允许在 Walk 状态执行动作" in errors[-1]
+
+    service.update_robot_status({"robot_status": "Walk"})
+    service.execute_motion("Nod")
+
+    assert worker._pending_requests == []
+    assert "需要重新确认现场安全" in errors[-1]
+
+    assert service.authorize_next_action("motion", "Nod") is True
+    service.execute_motion("Nod")
+
+    assert worker._pending_requests[-1][:2] == (
+        "execute_motion",
+        {"motion_name": "Nod"},
+    )
+
+    worker._pending_requests.clear()
+    service.execute_motion("Nod")
+
+    assert worker._pending_requests == []
+    assert "需要重新确认现场安全" in errors[-1]
+
+
+def test_luna_service_blocks_extended_action_paths(qapp):
+    worker = McpWorker("ws://robot", "HU_L04_01_084")
+    worker.update_target(
+        "HU_L04_01_084",
+        L04_PROFILE.allowed_tools,
+        "ws://robot",
+        "hu_l04_01",
+    )
+    service = DanceService(worker)
+    service.switch_resource_context("hu_l04_01", "HU_L04_01_084", "v1")
+    errors = []
+    service.error_occurred.connect(errors.append)
+
+    service.execute_motion_repeat("Nod")
+    service.execute_sequence(object())
+    service.set_walk_velocity(0.1, 0, 0)
+    service.set_motion_engine(1)
+
+    assert worker._pending_requests == []
+    assert errors == [
+        "Luna L04 尚未开放连续动作",
+        "Luna L04 尚未开放序列器",
+        "Luna L04 尚未开放行走控制",
+        "Luna L04 尚未开放手动动作库模式",
+    ]
+
+
+def test_luna_action_authorization_clears_when_status_or_target_changes(qapp):
+    worker = McpWorker("ws://robot", "HU_L04_01_084")
+    service = DanceService(worker)
+    service.switch_resource_context("hu_l04_01", "HU_L04_01_084", "v1")
+    service.update_robot_status({"robot_status": "Walk"})
+
+    assert service.authorize_next_action("motion", "Nod") is True
+    service.update_robot_status({"robot_status": "ZeroTorque"})
+    service.update_robot_status({"robot_status": "Walk"})
+    service.execute_motion("Nod")
+    assert worker._pending_requests == []
+
+    assert service.authorize_next_action("dance", "wakawaka") is True
+    service.switch_resource_context("hu_l04_01", "HU_L04_01_085", "v1")
+    service.update_robot_status({"robot_status": "Walk"})
+    service.execute_dance("wakawaka")
+    assert worker._pending_requests == []
+
+
+def test_action_restore_failure_is_not_counted_or_reported_as_walk(qapp, monkeypatch):
+    worker = McpWorker("ws://robot", "HU_L04_01_084")
+    worker.update_target(
+        "HU_L04_01_084",
+        L04_PROFILE.allowed_tools,
+        "ws://robot",
+        "hu_l04_01",
+    )
+    service = DanceService(worker)
+    service.switch_resource_context("hu_l04_01", "HU_L04_01_084", "v1")
+    service._pending_name = "Nod"
+    service._busy = True
+    increments = []
+    errors = []
+    labels = []
+    monkeypatch.setattr(
+        service,
+        "_increment_count",
+        lambda *_args: increments.append(True),
+    )
+    service.error_occurred.connect(errors.append)
+    service.action_state_changed.connect(lambda _running, label: labels.append(label))
+
+    service._on_tool_result("execute_motion", {
+        "success": False,
+        "content": [json.dumps({
+            "response": "success",
+            "notify": "success",
+            "post_action": {
+                "exit_motion_engine": "success",
+                "set_walk_mode": "fail",
+            },
+        })],
+        "_target_context": {
+            "generation": worker.target_generation,
+            "accid": "HU_L04_01_084",
+            "profile_key": "hu_l04_01",
+            "request_context": None,
+        },
+    })
+
+    assert increments == []
+    assert any("自动切回拟人行走模式失败" in error for error in errors)
+    assert labels[-1] == "动作结束，但未确认恢复拟人行走模式"
+
+
 def test_connection_workspace_rejects_robot_page_navigation(qtbot, monkeypatch):
     from ui.main_window import MainWindow
 

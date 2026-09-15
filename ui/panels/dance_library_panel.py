@@ -1,7 +1,7 @@
 """Dance & motion library — tabbed, compact layout."""
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QScrollArea, QSlider, QTabWidget, QGridLayout, QFrame,
+    QScrollArea, QSlider, QTabWidget, QGridLayout, QFrame, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QTimer
 from models.robot_profile import RobotProfile
@@ -78,6 +78,8 @@ class DanceLibraryPanel(QWidget):
         super().__init__(parent)
         self._service = dance_service
         self._allowed_tools: frozenset[str] | None = None
+        self._profile_key = ""
+        self._robot_status = ""
         self._dance_cards: dict[str, DanceCard] = {}
         self._motion_cards: dict[str, DanceCard] = {}
         self._walk_timer: QTimer | None = None
@@ -219,8 +221,8 @@ class DanceLibraryPanel(QWidget):
             dur = d.get("duration", 0)
             count = self._service.get_count(rc)
             card = DanceCard(cn, "dance", count, subtitle=f"{en} · {dur}s" if en else "")
-            card.execute_clicked.connect(lambda n=rc: self._service.execute_dance(n))
-            card.setEnabled(self._tool_allowed("execute_dance"))
+            card.execute_clicked.connect(lambda n=rc: self._request_dance_execution(n))
+            card.setEnabled(self._action_ready("execute_dance"))
             self.dance_grid.add_card(card)
             self._dance_cards[rc] = card
             names.append(rc)
@@ -240,14 +242,15 @@ class DanceLibraryPanel(QWidget):
                 "motion",
                 count,
                 subtitle=subtitle,
-                repeat_enabled=True,
+                repeat_enabled=self._profile_key != "hu_l04_01",
                 executable=not unavailable_reason,
                 unavailable_reason=unavailable_reason,
             )
             if not unavailable_reason:
-                card.execute_clicked.connect(lambda n=en: self._service.execute_motion(n))
-                card.repeat_clicked.connect(lambda n=en: self._service.execute_motion_repeat(n, times=5, delay_ms=2000))
-            card.setEnabled(self._tool_allowed("execute_motion") and not unavailable_reason)
+                card.execute_clicked.connect(lambda n=en: self._request_motion_execution(n))
+                if self._profile_key != "hu_l04_01":
+                    card.repeat_clicked.connect(lambda n=en: self._service.execute_motion_repeat(n, times=5, delay_ms=2000))
+            card.setEnabled(self._action_ready("execute_motion") and not unavailable_reason)
             self.motion_grid.add_card(card)
             self._motion_cards[en] = card
 
@@ -273,20 +276,22 @@ class DanceLibraryPanel(QWidget):
         self.action_status_label.setText(label)
         repeat_running = label.startswith("连续动作")
         for card in self._dance_cards.values():
-            card.setEnabled(not running and self._tool_allowed("execute_dance"))
+            card.setEnabled(not running and self._action_ready("execute_dance"))
         for name, card in self._motion_cards.items():
             card.setEnabled(
                 not running
-                and self._tool_allowed("execute_motion")
+                and self._action_ready("execute_motion")
                 and name not in UNRELIABLE_MOTIONS
             )
         self.refresh_dances_btn.setEnabled(not running and self._tool_allowed("get_dances"))
         self.refresh_motions_btn.setEnabled(not running and self._tool_allowed("get_motions"))
         self.motion_engine_btn.setEnabled(not running and self._tool_allowed("set_motion_engine"))
-        self.sequencer.setEnabled(not running and self._tool_allowed("execute_motion"))
+        self.sequencer.setEnabled(not running and self._sequence_execution_allowed())
         self.stop_repeat_btn.setEnabled(repeat_running and running)
 
     def apply_profile(self, profile: RobotProfile | None):
+        self._profile_key = profile.key if profile else ""
+        self._robot_status = ""
         self._allowed_tools = profile.allowed_tools if profile else frozenset()
         if not self._tool_allowed("set_walk_velocity"):
             self.stop_continuous_walk(reset_sliders=True, send_stop=False)
@@ -295,18 +300,94 @@ class DanceLibraryPanel(QWidget):
         self.motion_engine_btn.setEnabled(self._tool_allowed("set_motion_engine"))
         self.apply_walk_btn.setEnabled(self._tool_allowed("set_walk_velocity"))
         self.tabs.setTabEnabled(2, self._tool_allowed("set_walk_velocity"))
-        self.tabs.setTabEnabled(3, self._tool_allowed("execute_motion"))
-        self.sequencer.setEnabled(self._tool_allowed("execute_motion"))
+        self.tabs.setTabEnabled(3, self._sequence_execution_allowed())
+        self.sequencer.setEnabled(self._sequence_execution_allowed())
         for card in self._dance_cards.values():
-            card.setEnabled(self._tool_allowed("execute_dance"))
+            card.setEnabled(self._action_ready("execute_dance"))
         for name, card in self._motion_cards.items():
             card.setEnabled(
-                self._tool_allowed("execute_motion") and name not in UNRELIABLE_MOTIONS
+                self._action_ready("execute_motion") and name not in UNRELIABLE_MOTIONS
             )
-        if profile and not self._tool_allowed("execute_motion"):
+        if self._profile_key == "hu_l04_01":
+            self.action_status_label.setText("Luna L04 单次动作仅在 Walk 状态开放")
+        elif profile and not self._tool_allowed("execute_motion"):
             self.action_status_label.setText(
                 f"{profile.display_name} 当前仅开放动作与舞蹈列表查询"
             )
+
+    def update_robot_status(self, info: dict):
+        self._robot_status = str(info.get("robot_status", ""))
+        if self._profile_key != "hu_l04_01":
+            return
+        ready = self._robot_status == "Walk"
+        for card in self._dance_cards.values():
+            card.setEnabled(ready and self._tool_allowed("execute_dance"))
+        for name, card in self._motion_cards.items():
+            card.setEnabled(
+                ready
+                and self._tool_allowed("execute_motion")
+                and name not in UNRELIABLE_MOTIONS
+            )
+        self.action_status_label.setText(
+            "Luna L04 单次动作已就绪"
+            if ready else f"Luna L04 当前状态 {self._robot_status or '未知'}，需先切换到 Walk"
+        )
+
+    def _request_dance_execution(self, rc_mapping: str):
+        if (
+            self._confirm_luna_action("舞蹈", rc_mapping)
+            and self._service.authorize_next_action("dance", rc_mapping)
+        ):
+            self._service.execute_dance(rc_mapping)
+
+    def _request_motion_execution(self, motion_name: str):
+        if (
+            self._confirm_luna_action("原子动作", motion_name)
+            and self._service.authorize_next_action("motion", motion_name)
+        ):
+            self._service.execute_motion(motion_name)
+
+    def _confirm_luna_action(self, action_type: str, name: str) -> bool:
+        if self._profile_key != "hu_l04_01":
+            return True
+        if self._robot_status != "Walk":
+            AppMessageBox.warning(
+                self,
+                "Luna 动作已阻止",
+                f"当前状态为 {self._robot_status or '未知'}，仅允许在 Walk 状态执行。",
+            )
+            return False
+        box = AppMessageBox(
+            self,
+            "确认 Luna 真机动作",
+            f"即将执行{action_type}：{name}\n\n"
+            "请确认机器人周围无人、无障碍物，急停可用，并安排人员现场看护。",
+            QMessageBox.Icon.Warning,
+        )
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        confirm_button = box.button(QMessageBox.StandardButton.Yes)
+        cancel_button = box.button(QMessageBox.StandardButton.No)
+        if confirm_button:
+            confirm_button.setText("确认执行")
+            confirm_button.setObjectName("confirmButton")
+        if cancel_button:
+            cancel_button.setText("取消")
+        return box.exec() == QMessageBox.StandardButton.Yes
+
+    def _action_ready(self, tool_name: str) -> bool:
+        return self._tool_allowed(tool_name) and (
+            self._profile_key != "hu_l04_01" or self._robot_status == "Walk"
+        )
+
+    def _sequence_execution_allowed(self) -> bool:
+        return (
+            self._profile_key != "hu_l04_01"
+            and self._tool_allowed("execute_motion")
+            and self._tool_allowed("set_walk_velocity")
+        )
 
     def _tool_allowed(self, tool_name: str) -> bool:
         return self._allowed_tools is None or tool_name in self._allowed_tools

@@ -62,7 +62,7 @@ def test_applying_l04_profile_updates_legacy_config_fields():
     assert robot_config.allow_time_repair is False
 
 
-def test_worker_blocks_l04_control_and_drops_stale_queue(qapp):
+def test_worker_allows_l04_actions_but_blocks_manual_movement(qapp):
     worker = McpWorker(
         "ws://10.192.1.2:5000",
         "HU_L04_01_091",
@@ -71,11 +71,16 @@ def test_worker_blocks_l04_control_and_drops_stale_queue(qapp):
     errors = []
     worker.tool_error.connect(lambda name, detail: errors.append((name, detail)))
 
-    worker.call_tool("execute_motion", {"motion_name": "wave"})
+    worker.call_tool("set_walk_velocity", {"x": 0.1, "y": 0, "yaw": 0})
     worker.call_tool("get_motions", {})
+    worker.call_tool("execute_motion", {"motion_name": "Nod"})
 
-    assert errors == [("execute_motion", "当前机器人型号未开放此能力")]
+    assert errors == [("set_walk_velocity", "当前机器人型号未开放此能力")]
     assert worker._pending_requests[0][:2] == ("get_motions", {})
+    assert worker._pending_requests[1][:2] == (
+        "execute_motion",
+        {"motion_name": "Nod"},
+    )
 
     worker.update_target("HU_L04_01_092", L04_PROFILE.allowed_tools)
 
