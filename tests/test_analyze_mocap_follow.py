@@ -118,6 +118,31 @@ def test_unknown_body_lists_available_names(tmp_path):
         follow.load_track(str(csv_path), "Robot")
 
 
+def test_mocap_room_variant_header(tmp_path):
+    # 动捕房软件：表头多一列 CameraSyncTime，标签在第 3 列，元数据键为 LengthUnits / Ratate Format
+    lines = [
+        "DataName,t,FrameRate,100,LengthUnits,mm,Ratate Format,Quaternion",
+        "",
+        ",,Type," + ",".join(["Rigid Body"] * 7 + ["RigidBodyMarker"] * 3),
+        ",,Name," + ",".join(["oli"] * 7 + ["oliMarker1"] * 3),
+        ",,ID," + ",".join(["2"] * 10),
+        ",,," + ",".join(["Rotation"] * 4 + ["Position"] * 6),
+        "Frame,Time,CameraSyncTime," + ",".join(["X", "Y", "Z", "W", "X", "Y", "Z", "X", "Y", "Z"]),
+    ]
+    for i in range(11):
+        qx, qy, qz, qw = _yaw_quat_y_up(-36 * i)
+        lines.append(f"{i + 1},{i * 0.01},0,{qx},{qy},{qz},{qw},{i * 1000},1200,0,0,0,0")
+    csv_path = tmp_path / "room.csv"
+    csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    track = follow.load_track(str(csv_path), "oli")
+
+    assert track.positions[-1][0] == pytest.approx(10.0)
+    assert follow.rotate_stats(track, "y")["end"] == pytest.approx(-360, abs=0.1)
+    with pytest.raises(ValueError, match="'oli'"):
+        follow.load_track(str(csv_path), "Human")
+
+
 def test_plain_csv_with_column_names(tmp_path):
     csv_path = tmp_path / "plain.csv"
     rows = ["time,x,y,z,qx,qy,qz,qw"]

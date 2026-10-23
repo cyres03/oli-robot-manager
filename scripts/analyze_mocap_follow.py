@@ -16,7 +16,10 @@ import math
 import sys
 from dataclasses import dataclass, field
 
-LENGTH_UNITS = {"meters": 1.0, "centimeters": 0.01, "millimeters": 0.001}
+LENGTH_UNITS = {"meters": 1.0, "m": 1.0, "centimeters": 0.01, "cm": 0.01,
+                "millimeters": 0.001, "mm": 0.001}
+# Motive 写 "Rotation Type"；动捕房另一款软件写 "Ratate Format"（原文拼写）
+ROTATION_KEYS = {"rotationtype", "ratateformat", "rotateformat", "rotationformat"}
 GAP_WARN_SECONDS = 0.2
 
 
@@ -54,10 +57,10 @@ def _find_motive_header(rows):
 def _motive_scale(rows):
     meta = rows[0] if rows else []
     for key, value in zip(meta[::2], meta[1::2]):
-        key = key.strip().lower()
-        if key == "rotation type" and value.strip().lower() != "quaternion":
-            raise ValueError(f"Motive 导出的旋转类型是 {value!r}，请重新导出为 Quaternion")
-        if key == "length units":
+        key = key.strip().lower().replace(" ", "")
+        if key in ROTATION_KEYS and value.strip().lower() != "quaternion":
+            raise ValueError(f"导出的旋转格式是 {value!r}，请重新导出为 Quaternion")
+        if key == "lengthunits":
             unit = value.strip().lower()
             if unit not in LENGTH_UNITS:
                 raise ValueError(f"无法识别的长度单位 {value!r}")
@@ -70,10 +73,10 @@ def _motive_columns(rows, header_index, body_name):
     axis_row = rows[header_index]
     type_row = name_row = None
     for row in rows[1:header_index]:
-        label = row[1].strip() if len(row) > 1 else ""
-        if label == "Type":
+        labels = {cell.strip() for cell in row[:4]}
+        if "Type" in labels:
             type_row = row
-        elif label == "Name":
+        elif "Name" in labels:
             name_row = row
     if name_row is None:
         raise ValueError("Motive 表头中找不到 Name 行")
@@ -92,7 +95,11 @@ def _motive_columns(rows, header_index, body_name):
         if key in wanted and columns[wanted[key]] is None:
             columns[wanted[key]] = col
     if None in columns:
-        names = sorted({n.strip() for n in name_row[2:] if n.strip() and ":" not in n})
+        names = sorted({
+            n.strip() for col, n in enumerate(name_row)
+            if col >= 2 and n.strip() and ":" not in n and n.strip() != "Name"
+            and (type_row is None or (col < len(type_row) and type_row[col].strip() == "Rigid Body"))
+        })
         raise ValueError(f"找不到刚体 {body_name!r} 的完整位置/四元数列；文件中的名称：{names}")
     return columns
 
