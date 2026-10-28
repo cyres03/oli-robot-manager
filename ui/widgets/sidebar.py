@@ -7,7 +7,6 @@ from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtSvgWidgets import QSvgWidget
 from models.robot_profile import CapabilityState, RobotProfile
 from models.workspace import WorkspaceDefinition
-from network.wifi_manager import WifiManager
 
 
 SIDEBAR_COLOR_PRESETS = {
@@ -257,11 +256,6 @@ class Sidebar(QFrame):
 
         self.set_active("dance_library")
         QTimer.singleShot(0, lambda: self._move_indicator(self._buttons["dance_library"], animate=False))
-        self.refresh_wifi_status()
-
-        self._wifi_timer = QTimer(self)
-        self._wifi_timer.timeout.connect(self.refresh_wifi_status)
-        self._wifi_timer.start(5000)
 
     def apply_profile(self, profile: RobotProfile | None):
         nodes = (
@@ -324,16 +318,14 @@ class Sidebar(QFrame):
         if active in self._buttons:
             self.set_active(active)
 
-    def refresh_wifi_status(self):
-        ssid = WifiManager.get_robot_ssid() or WifiManager.get_current_ssid()
-        is_robot = WifiManager.is_robot_wifi()
+    def update_wifi_status(self, ssid: str | None, is_robot: bool):
         if ssid:
             color = "#00B42A" if is_robot else "#FF7D00"
             self.wifi_label.setText(f"  WiFi: {ssid}")
             self.wifi_label.setStyleSheet(
                 f"color: {color}; font-size: 11px; padding: 4px 20px; background: transparent;")
         else:
-            self.wifi_label.setText("  WiFi: 未连接")
+            self.wifi_label.setText("  WiFi: 未连接机器人")
             self.wifi_label.setStyleSheet("color: #F53F3F; font-size: 11px; padding: 4px 20px; background: transparent;")
 
     def _on_click(self, key: str):

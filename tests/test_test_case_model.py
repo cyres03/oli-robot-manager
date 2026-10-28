@@ -36,6 +36,11 @@ def test_builtin_cases_include_profile_scoped_hand_fatigue():
     assert mros_case.script_path == "scripts/mros_node_health.sh"
     assert mros_case.arguments == (".",)
     assert mros_case.requires_pty is True
+    assert mros_case.supports_firmware("robot-luna-r-1.2.9") is True
+    assert mros_case.supports_firmware(
+        "robot-luna-r-1.3.11.20260922102142"
+    ) is True
+    assert mros_case.supports_firmware("robot-luna-r-2.0.0") is False
     assert cases[1].requires_pty is False
     assert cases[1].category == "伴随节点"
     for fatigue_case in cases[2:]:

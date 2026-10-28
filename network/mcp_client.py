@@ -58,8 +58,8 @@ def _is_luna_dance_terminal_response(data: dict) -> bool:
 
 def _post_action_succeeded(post_action: dict) -> bool:
     return (
-        post_action.get("exit_motion_engine") == "success"
-        and post_action.get("set_walk_mode") == "success"
+        post_action.get("verified_mode") == "remote_control"
+        and post_action.get("verified_state") == "idle"
     )
 
 
@@ -110,9 +110,13 @@ class RobotClient:
                     "guid": guid, "data": payload,
                 }))
                 response_title = title.replace("request_", "response_")
+                deadline = asyncio.get_running_loop().time() + timeout
                 while True:
                     try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+                        remaining = deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            raise asyncio.TimeoutError()
+                        raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
                         msg = json.loads(raw)
                         if msg.get("title") == response_title and msg.get("guid") == guid:
                             self._audit("response", response_title, guid, payload, msg.get("data", {}))
@@ -186,8 +190,26 @@ class RobotClient:
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
                         msg = json.loads(raw)
+                    except asyncio.TimeoutError as exc:
+                        self._audit("notify_timeout", title, guid, payload, {
+                            "response": response_msg.get("data", {}) if response_msg else None,
+                            "notify_title": notify_title,
+                        })
+                        if response_msg:
+                            return response_msg, notify_msg
+                        raise TimeoutError(
+                            f"{title} {timeout:.0f}s 内未收到 response/notify"
+                        ) from exc
                     except Exception as exc:
-                        self._audit("error", title, guid, payload, {"error": str(exc)})
+                        self._audit(
+                            "notify_error" if response_msg else "error",
+                            title,
+                            guid,
+                            payload,
+                            {"error": str(exc)},
+                        )
+                        if response_msg:
+                            return response_msg, notify_msg
                         raise
                     if msg.get("title") == response_title and msg.get("guid") == guid:
                         response_msg = msg
@@ -195,7 +217,10 @@ class RobotClient:
                         result = msg.get("data", {}).get("result")
                         if result and result != "success":
                             return response_msg, notify_msg
-                    if msg.get("title") == notify_title:
+                    if (
+                        msg.get("title") == notify_title
+                        and response_msg is not None
+                    ):
                         notify_msg = msg
                         self._audit("notify", notify_title, guid, payload, msg.get("data", {}))
                     if response_msg and notify_msg:
@@ -367,18 +392,62 @@ class RobotClient:
         last_status = {}
         while time.monotonic() < deadline:
             last_status = self.get_action_library_status()
-            if last_status.get("action_library_mode") == "action_library":
+            if (
+                last_status.get("action_library_mode") == "action_library"
+                and last_status.get("action_library_state") == "idle"
+            ):
+                return last_status
+            time.sleep(interval)
+        return last_status
+
+    def _wait_action_library_exit(self, timeout: float = 3.0, interval: float = 0.2) -> dict:
+        deadline = time.monotonic() + timeout
+        last_status = {}
+        while time.monotonic() < deadline:
+            last_status = self.get_action_library_status()
+            if (
+                last_status.get("result") == "success"
+                and last_status.get("action_library_mode") == "remote_control"
+                and last_status.get("action_library_state") == "idle"
+            ):
+                return last_status
+            time.sleep(interval)
+        return last_status
+
+    def _wait_action_library_quiescent(
+        self,
+        timeout: float = 3.0,
+        interval: float = 0.2,
+    ) -> dict:
+        deadline = time.monotonic() + timeout
+        last_status = {}
+        while time.monotonic() < deadline:
+            last_status = self.get_action_library_status()
+            if (
+                last_status.get("result") == "success"
+                and last_status.get("action_library_state") == "idle"
+            ):
                 return last_status
             time.sleep(interval)
         return last_status
 
     def _ensure_action_library_mode(self) -> dict:
         status = self.get_action_library_status()
-        if status.get("action_library_mode") == "action_library":
+        if (
+            status.get("action_library_mode") == "action_library"
+            and status.get("action_library_state") == "idle"
+        ):
             return {"status": status, "entered": False, "result": "already_action_library"}
-        entered = self.set_motion_engine(1)
+        entered = (
+            True
+            if status.get("action_library_mode") == "action_library"
+            else self.set_motion_engine(1)
+        )
         ready_status = self._wait_action_library_mode() if entered else {}
-        ready = ready_status.get("action_library_mode") == "action_library"
+        ready = (
+            ready_status.get("action_library_mode") == "action_library"
+            and ready_status.get("action_library_state") == "idle"
+        )
         return {
             "status": status,
             "entered": entered,
@@ -387,11 +456,54 @@ class RobotClient:
         }
 
     def _restore_walk_mode_after_action(self) -> dict:
-        exited = self.set_motion_engine(0)
-        walk_mode = self.set_walk_mode()
+        try:
+            exited = self.set_motion_engine(0)
+        except Exception:
+            exited = False
+        try:
+            walk_mode = self.set_walk_mode()
+        except Exception:
+            walk_mode = False
+        try:
+            final_status = self._wait_action_library_exit()
+        except Exception as exc:
+            final_status = {"error": str(exc)}
         return {
             "exit_motion_engine": "success" if exited else "fail",
             "set_walk_mode": "success" if walk_mode else "fail",
+            "verified_mode": final_status.get("action_library_mode", "unknown"),
+            "verified_state": final_status.get("action_library_state", "unknown"),
+            "status": final_status,
+        }
+
+    def _verify_or_restore_walk_after_sync(self) -> dict:
+        try:
+            status = self._wait_action_library_quiescent()
+        except Exception as exc:
+            status = {"error": str(exc)}
+        if (
+            status.get("action_library_mode") == "remote_control"
+            and status.get("action_library_state") == "idle"
+        ):
+            return {
+                "exit_motion_engine": "not_needed",
+                "set_walk_mode": "not_needed",
+                "verified_mode": "remote_control",
+                "verified_state": "idle",
+                "status": status,
+            }
+        if (
+            status.get("action_library_mode") == "action_library"
+            and status.get("action_library_state") == "idle"
+        ):
+            return self._restore_walk_mode_after_action()
+        return {
+            "exit_motion_engine": "deferred",
+            "set_walk_mode": "deferred",
+            "verified_mode": status.get("action_library_mode", "unknown"),
+            "verified_state": status.get("action_library_state", "unknown"),
+            "status": status,
+            "recovery": "pending",
         }
 
     def get_atomic_motion_list(self) -> list[dict]:
@@ -411,11 +523,16 @@ class RobotClient:
         return {
             "response": resp.get("data", {}).get("result") if resp else None,
             "notify": notify.get("data", {}).get("result") if notify else None,
+            "completion": "notify" if notify else "notify_timeout",
         }
 
-    def execute_action_sync(self, names: list[str]) -> dict:
-        """Execute multiple dances/motions at once (comma-separated names)."""
-        resp = self._send_request("request_action_sync", {"name": ",".join(names)})
+    def execute_action_sync(self, names: list[str], timeout: float = 120.0) -> dict:
+        """Execute actions synchronously; the protocol returns after restoring Walk."""
+        resp = self._send_request(
+            "request_action_sync",
+            {"name": ",".join(names)},
+            timeout=timeout,
+        )
         return resp.get("data", {})
 
     # ---- 4.4.16 Mobile (UB) Manipulation ----
@@ -613,6 +730,7 @@ class RobotClient:
             "set_walk_mode": "request_set_walk_mode",
             "set_motion_engine": "request_set_motion_engine",
             "get_action_library_status": "request_get_action_library_status",
+            "recover_action_walk": "internal_recover_action_walk",
             "prepare": "request_prepare",
             "damping": "request_damping",
             "zero_torque": "request_zero_torque",
@@ -679,35 +797,63 @@ class RobotClient:
             if tool_name == "set_walk_velocity":
                 resp = self._send_command(ws_title, ws_data)
                 return {"success": True, "content": [json.dumps(resp.get("data", {}))]}
+            if tool_name == "recover_action_walk":
+                result = self._restore_walk_mode_after_action()
+                return {
+                    "success": _post_action_succeeded(result),
+                    "content": [json.dumps(result)],
+                }
             if tool_name == "execute_dance":
+                result = {}
                 if arguments.get("ensure_action_library", True):
-                    result = {"pre_action": self._ensure_action_library_mode()}
-                    if result["pre_action"].get("result") == "fail":
-                        return {"success": False, "content": [json.dumps(result)]}
-                else:
-                    result = {}
-                result.update(self.execute_dance(ws_data.get("name", ""), timeout=240.0))
+                    result["pre_action"] = self._ensure_action_library_mode()
+                pre_action_ok = (
+                    not arguments.get("ensure_action_library", True)
+                    or result["pre_action"].get("result") != "fail"
+                )
+                if pre_action_ok:
+                    try:
+                        result.update(self.execute_dance(
+                            ws_data.get("name", ""),
+                            timeout=240.0,
+                        ))
+                    except Exception as exc:
+                        result["execution_error"] = str(exc)
                 completion_ok = (
                     result.get("notify") == "success"
                     or result.get("completion") == "response"
                 )
-                success = result.get("response") == "success" and completion_ok
-                if success and arguments.get("restore_walk_mode", True):
-                    result["post_action"] = self._restore_walk_mode_after_action()
-                    success = _post_action_succeeded(result["post_action"])
+                success = (
+                    pre_action_ok
+                    and result.get("response") == "success"
+                    and completion_ok
+                )
+                if arguments.get("restore_walk_mode", True):
+                    result["post_action"] = self._verify_or_restore_walk_after_sync()
+                    success = success and _post_action_succeeded(result["post_action"])
                 return {"success": success, "content": [json.dumps(result)]}
             if tool_name == "execute_motion":
-                if arguments.get("ensure_action_library", True):
-                    result = {"pre_action": self._ensure_action_library_mode()}
-                    if result["pre_action"].get("result") == "fail":
-                        return {"success": False, "content": [json.dumps(result)]}
-                else:
-                    result = {}
-                result.update(self.execute_atomic_motion(ws_data.get("motion_name", ""), timeout=45.0))
-                success = result.get("response") == "success" and result.get("notify") == "success"
-                if success and arguments.get("restore_walk_mode", True):
-                    result["post_action"] = self._restore_walk_mode_after_action()
-                    success = _post_action_succeeded(result["post_action"])
+                try:
+                    completion_timeout = float(arguments.get("completion_timeout", 45.0))
+                except (TypeError, ValueError):
+                    completion_timeout = 45.0
+                if not math.isfinite(completion_timeout):
+                    completion_timeout = 45.0
+                completion_timeout = min(300.0, max(1.0, completion_timeout))
+                result = {"protocol": "request_action_sync"}
+                try:
+                    response = self.execute_action_sync(
+                        [ws_data.get("motion_name", "")],
+                        timeout=completion_timeout,
+                    )
+                    result["response"] = response.get("result")
+                    result["response_data"] = response
+                except Exception as exc:
+                    result["execution_error"] = str(exc)
+                success = result.get("response") == "success"
+                if arguments.get("restore_walk_mode", True):
+                    result["post_action"] = self._verify_or_restore_walk_after_sync()
+                    success = success and _post_action_succeeded(result["post_action"])
                 return {"success": success, "content": [json.dumps(result)]}
             resp = self._send_request(ws_title, ws_data)
             result = resp.get("data", {}).get("result", "fail")

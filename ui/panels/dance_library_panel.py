@@ -1,7 +1,9 @@
 """Dance & motion library — tabbed, compact layout."""
+import math
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QScrollArea, QSlider, QTabWidget, QGridLayout, QFrame, QMessageBox,
+    QScrollArea, QSlider, QSpinBox, QTabWidget, QGridLayout, QFrame, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QTimer
 from models.robot_profile import RobotProfile
@@ -31,7 +33,6 @@ DANCE_DISPLAY_ORDER = [
 UNRELIABLE_MOTIONS = {
     "raise_and_introduce": "该动作当前固件不返回完成通知，暂不参与自动验收",
 }
-
 
 def _normalize_dance_label(value: str) -> str:
     return "".join(value.lower().split())
@@ -80,8 +81,10 @@ class DanceLibraryPanel(QWidget):
         self._allowed_tools: frozenset[str] | None = None
         self._profile_key = ""
         self._robot_status = ""
+        self._action_running = False
         self._dance_cards: dict[str, DanceCard] = {}
         self._motion_cards: dict[str, DanceCard] = {}
+        self._motion_completion_timeouts: dict[str, float] = {}
         self._walk_timer: QTimer | None = None
         self._build_ui()
         self._connect_signals()
@@ -98,6 +101,13 @@ class DanceLibraryPanel(QWidget):
         self.motion_engine_btn = QPushButton("手动动作库模式")
         self.stop_repeat_btn = QPushButton("停止连续动作")
         self.stop_repeat_btn.setEnabled(False)
+        self.stop_repeat_btn.setToolTip("停止后续轮次；当前已下发动作完成后停止")
+        self.repeat_count_spin = QSpinBox()
+        self.repeat_count_spin.setRange(1, 100)
+        self.repeat_count_spin.setValue(5)
+        self.repeat_count_spin.setSuffix(" 次")
+        self.repeat_count_spin.setFixedSize(82, 30)
+        self.repeat_count_spin.setToolTip("设置原子动作连续执行次数")
         self.motion_engine_btn.setCheckable(True)
         for b in [self.refresh_dances_btn, self.refresh_motions_btn, self.motion_engine_btn, self.stop_repeat_btn]:
             b.setFixedHeight(30)
@@ -110,6 +120,12 @@ class DanceLibraryPanel(QWidget):
         bar.addWidget(self.refresh_motions_btn)
         bar.addWidget(self.motion_engine_btn)
         bar.addWidget(self.stop_repeat_btn)
+        repeat_count_label = QLabel("连续次数")
+        repeat_count_label.setStyleSheet(
+            "color: #4E5969; font-size: 12px; border: none; background: transparent;"
+        )
+        bar.addWidget(repeat_count_label)
+        bar.addWidget(self.repeat_count_spin)
         bar.addStretch()
         layout.addLayout(bar)
 
@@ -194,6 +210,7 @@ class DanceLibraryPanel(QWidget):
         self.refresh_motions_btn.clicked.connect(self._service.load_motions)
         self.motion_engine_btn.clicked.connect(self._on_motion_engine_toggled)
         self.stop_repeat_btn.clicked.connect(self._service.stop_motion_repeat)
+        self.repeat_count_spin.valueChanged.connect(self._update_repeat_count_labels)
         self._service.dance_list_loaded.connect(self._populate_dances)
         self._service.motion_list_loaded.connect(self._populate_motions)
         self._service.dance_executed.connect(self._on_dance_executed)
@@ -231,25 +248,35 @@ class DanceLibraryPanel(QWidget):
     def _populate_motions(self, motions: list[dict]):
         self.motion_grid.clear_cards()
         self._motion_cards.clear()
+        self._motion_completion_timeouts.clear()
         for m in motions:
             en = m.get("motion_name_en", "")
             cn = m.get("motion_name_cn", "")
             count = self._service.get_count(en)
             unavailable_reason = UNRELIABLE_MOTIONS.get(en, "")
+            try:
+                duration = float(m.get("duration", 0))
+            except (TypeError, ValueError):
+                duration = 0.0
+            if math.isfinite(duration) and duration > 0:
+                self._motion_completion_timeouts[en] = min(
+                    300.0,
+                    max(45.0, duration + 30.0),
+                )
             subtitle = unavailable_reason if unavailable_reason else (en if cn else "")
             card = DanceCard(
                 cn or en,
                 "motion",
                 count,
                 subtitle=subtitle,
-                repeat_enabled=self._profile_key != "hu_l04_01",
+                repeat_enabled=True,
                 executable=not unavailable_reason,
                 unavailable_reason=unavailable_reason,
             )
+            card.set_repeat_count(self.repeat_count_spin.value())
             if not unavailable_reason:
                 card.execute_clicked.connect(lambda n=en: self._request_motion_execution(n))
-                if self._profile_key != "hu_l04_01":
-                    card.repeat_clicked.connect(lambda n=en: self._service.execute_motion_repeat(n, times=5, delay_ms=2000))
+                card.repeat_clicked.connect(lambda n=en: self._request_motion_repeat(n))
             card.setEnabled(self._action_ready("execute_motion") and not unavailable_reason)
             self.motion_grid.add_card(card)
             self._motion_cards[en] = card
@@ -271,6 +298,7 @@ class DanceLibraryPanel(QWidget):
             self._motion_cards[name].set_count(count)
 
     def _on_action_state_changed(self, running: bool, label: str):
+        self._action_running = running
         if running:
             self.stop_continuous_walk(reset_sliders=True, send_stop=True)
         self.action_status_label.setText(label)
@@ -286,6 +314,7 @@ class DanceLibraryPanel(QWidget):
         self.refresh_dances_btn.setEnabled(not running and self._tool_allowed("get_dances"))
         self.refresh_motions_btn.setEnabled(not running and self._tool_allowed("get_motions"))
         self.motion_engine_btn.setEnabled(not running and self._tool_allowed("set_motion_engine"))
+        self.repeat_count_spin.setEnabled(not running and self._tool_allowed("execute_motion"))
         self.sequencer.setEnabled(not running and self._sequence_execution_allowed())
         self.stop_repeat_btn.setEnabled(repeat_running and running)
 
@@ -295,43 +324,70 @@ class DanceLibraryPanel(QWidget):
         self._allowed_tools = profile.allowed_tools if profile else frozenset()
         if not self._tool_allowed("set_walk_velocity"):
             self.stop_continuous_walk(reset_sliders=True, send_stop=False)
-        self.refresh_dances_btn.setEnabled(self._tool_allowed("get_dances"))
-        self.refresh_motions_btn.setEnabled(self._tool_allowed("get_motions"))
-        self.motion_engine_btn.setEnabled(self._tool_allowed("set_motion_engine"))
+        self.refresh_dances_btn.setEnabled(
+            not self._action_running and self._tool_allowed("get_dances")
+        )
+        self.refresh_motions_btn.setEnabled(
+            not self._action_running and self._tool_allowed("get_motions")
+        )
+        self.motion_engine_btn.setEnabled(
+            not self._action_running and self._tool_allowed("set_motion_engine")
+        )
+        self.repeat_count_spin.setEnabled(
+            not self._action_running and self._tool_allowed("execute_motion")
+        )
         self.apply_walk_btn.setEnabled(self._tool_allowed("set_walk_velocity"))
         self.tabs.setTabEnabled(2, self._tool_allowed("set_walk_velocity"))
         self.tabs.setTabEnabled(3, self._sequence_execution_allowed())
-        self.sequencer.setEnabled(self._sequence_execution_allowed())
+        self.sequencer.setEnabled(
+            not self._action_running and self._sequence_execution_allowed()
+        )
         for card in self._dance_cards.values():
-            card.setEnabled(self._action_ready("execute_dance"))
+            card.setEnabled(
+                not self._action_running and self._action_ready("execute_dance")
+            )
         for name, card in self._motion_cards.items():
             card.setEnabled(
-                self._action_ready("execute_motion") and name not in UNRELIABLE_MOTIONS
+                not self._action_running
+                and self._action_ready("execute_motion")
+                and name not in UNRELIABLE_MOTIONS
             )
-        if self._profile_key == "hu_l04_01":
-            self.action_status_label.setText("Luna L04 单次动作仅在 Walk 状态开放")
-        elif profile and not self._tool_allowed("execute_motion"):
-            self.action_status_label.setText(
-                f"{profile.display_name} 当前仅开放动作与舞蹈列表查询"
-            )
+        if not self._action_running:
+            if self._profile_key == "hu_l04_01":
+                self.action_status_label.setText("Luna L04 单次及连续动作仅在 Walk 状态开放")
+            elif profile and not self._tool_allowed("execute_motion"):
+                self.action_status_label.setText(
+                    f"{profile.display_name} 当前仅开放动作与舞蹈列表查询"
+                )
 
     def update_robot_status(self, info: dict):
         self._robot_status = str(info.get("robot_status", ""))
         if self._profile_key != "hu_l04_01":
             return
-        ready = self._robot_status == "Walk"
+        dance_ready = self._robot_status == "Walk" and not self._action_running
+        motion_ready = (
+            self._robot_status in {"Walk", "Menu"}
+            and not self._action_running
+        )
         for card in self._dance_cards.values():
-            card.setEnabled(ready and self._tool_allowed("execute_dance"))
+            card.setEnabled(dance_ready and self._tool_allowed("execute_dance"))
         for name, card in self._motion_cards.items():
             card.setEnabled(
-                ready
+                motion_ready
                 and self._tool_allowed("execute_motion")
                 and name not in UNRELIABLE_MOTIONS
             )
-        self.action_status_label.setText(
-            "Luna L04 单次动作已就绪"
-            if ready else f"Luna L04 当前状态 {self._robot_status or '未知'}，需先切换到 Walk"
-        )
+        if not self._action_running:
+            if self._robot_status == "Menu":
+                self.action_status_label.setText(
+                    "Luna L04 当前在 Menu，可执行原子动作；同步接口结束后将确认返回 Walk"
+                )
+            else:
+                self.action_status_label.setText(
+                    "Luna L04 单次及连续动作已就绪"
+                    if motion_ready
+                    else f"Luna L04 当前状态 {self._robot_status or '未知'}，需先切换到 Walk"
+                )
 
     def _request_dance_execution(self, rc_mapping: str):
         if (
@@ -342,19 +398,54 @@ class DanceLibraryPanel(QWidget):
 
     def _request_motion_execution(self, motion_name: str):
         if (
-            self._confirm_luna_action("原子动作", motion_name)
+            self._confirm_luna_action("原子动作", motion_name, allow_menu=True)
             and self._service.authorize_next_action("motion", motion_name)
         ):
-            self._service.execute_motion(motion_name)
+            self._service.execute_motion(
+                motion_name,
+                completion_timeout=self._motion_completion_timeouts.get(motion_name),
+            )
 
-    def _confirm_luna_action(self, action_type: str, name: str) -> bool:
+    def _request_motion_repeat(self, motion_name: str):
+        repeat_count = self.repeat_count_spin.value()
+        if (
+            self._confirm_luna_action(
+                f"连续原子动作（{repeat_count} 次）",
+                motion_name,
+                allow_menu=True,
+            )
+            and self._service.authorize_next_action(
+                "motion",
+                motion_name,
+                repeat_count,
+            )
+        ):
+            self._service.execute_motion_repeat(
+                motion_name,
+                times=repeat_count,
+                delay_ms=2000,
+                completion_timeout=self._motion_completion_timeouts.get(motion_name),
+            )
+
+    def _update_repeat_count_labels(self, count: int):
+        for card in self._motion_cards.values():
+            card.set_repeat_count(count)
+
+    def _confirm_luna_action(
+        self,
+        action_type: str,
+        name: str,
+        allow_menu: bool = False,
+    ) -> bool:
         if self._profile_key != "hu_l04_01":
             return True
-        if self._robot_status != "Walk":
+        allowed_states = {"Walk", "Menu"} if allow_menu else {"Walk"}
+        if self._robot_status not in allowed_states:
+            allowed = "Walk 或 Menu" if allow_menu else "Walk"
             AppMessageBox.warning(
                 self,
                 "Luna 动作已阻止",
-                f"当前状态为 {self._robot_status or '未知'}，仅允许在 Walk 状态执行。",
+                f"当前状态为 {self._robot_status or '未知'}，仅允许在 {allowed} 状态执行。",
             )
             return False
         box = AppMessageBox(
@@ -378,9 +469,13 @@ class DanceLibraryPanel(QWidget):
         return box.exec() == QMessageBox.StandardButton.Yes
 
     def _action_ready(self, tool_name: str) -> bool:
-        return self._tool_allowed(tool_name) and (
-            self._profile_key != "hu_l04_01" or self._robot_status == "Walk"
-        )
+        if not self._tool_allowed(tool_name):
+            return False
+        if self._profile_key != "hu_l04_01":
+            return True
+        if tool_name == "execute_motion":
+            return self._robot_status in {"Walk", "Menu"}
+        return self._robot_status == "Walk"
 
     def _sequence_execution_allowed(self) -> bool:
         return (

@@ -8,7 +8,7 @@
 2. `MainWindow`/服务调用 `McpWorker.call_tool(tool_name, arguments)`。
 3. `McpWorker` 串行执行队列，最终进入 `RobotClient.call_tool()`。
 4. `RobotClient` 发送 SDK JSON：`accid/title/timestamp/guid/data`。
-5. 普通 request 等同 guid 的 `response_*`；舞蹈/动作还要等对应 `notify_*`。
+5. 普通 request 等同 guid 的 `response_*`；舞蹈按产品完成语义判定，原子动作使用同步 `request_action_sync`，其 response 在动作完成并自动回到 Walk 后返回。
 
 本地审计日志：`%LOCALAPPDATA%\OliRobotManager\audit\sdk_requests.jsonl`。每条会记录时间、accid、title、guid、data、response/notify/error。之后如果机器人日志再次出现 `joystick_manager key combination changed`，先按时间和 guid/title 对齐这份文件。
 
@@ -44,6 +44,12 @@
 
 任一步返回失败、超时或 worker 报错，循环会停止，不再下发后续姿态动作。
 
+## 动作期间换机的失败关闭策略
+
+同步动作请求超时、连接中断或状态异常后锁住后续动作，不重试原动作；只执行经过该机型/固件验证的有限恢复步骤。
+
+- 同一机器人仅固件版本字段更新时，保留在途动作和恢复跟踪，不丢弃完成结果。
+- 动作期间切换 ACCID/Profile 或目标断开时，旧机器人状态无法继续确认；软件清除旧队列但保持动作入口锁定，不允许向新目标发送动作。现场确认旧机器人安全后，重启应用解除该跨目标锁定。
 ## 舞蹈、动作库、序列器
 
 | UI 操作 | SDK title / data | 判定完成的内容 | 备注 |
@@ -51,9 +57,11 @@
 | 刷新舞蹈 | `request_get_dance_list {}` | `response_get_dance_list.data.result == "success"`，读取 `dances` | 只查询。 |
 | 刷新动作 | `request_get_atomic_motion_list {}` | `response_get_atomic_motion_list.data.result == "success"`，读取 `motion_list` | 只查询。 |
 | 执行舞蹈卡片 | 先确保 `request_set_motion_engine {"mode":1}`，再 `request_dance {"name":rc_mapping}` | `response_dance.data.result == "success"` 且 `notify_dance.data.result == "success"` | 完成后自动 `request_set_motion_engine {"mode":0}` + `request_set_walk_mode {}`。 |
-| 执行动作卡片 | 先确保 `request_set_motion_engine {"mode":1}`，再 `request_execute_atomic_motion {"motion_name":name}` | `response_execute_atomic_motion.data.result == "success"` 且 `notify_execute_atomic_motion.data.result == "success"` | 完成后自动退出动作库并回 Walk。 |
-| 序列器：舞蹈/动作步骤 | 同上 | 当前动作 response+notify 都 success 后才推进下一步 | 失败则停止序列。 |
+| 执行动作卡片 | `request_action_sync {"name":name}` | 同 GUID 的 `response_action_sync.data.result == "success"`，随后 `request_get_action_library_status` 确认 `action_library_mode == "remote_control"` 且 `action_library_state == "idle"` | 文档定义该同步接口可从 Walk/动作库执行，动作完成后返回并自动回 Walk；若未满足最终状态，软件再执行退出动作库、进入 Walk 并复验。 |
+| 序列器：舞蹈/动作步骤 | 舞蹈沿用产品适配；原子动作使用 `request_action_sync` | 当前步骤完成且恢复状态确认后才推进下一步 | 失败则停止序列。 |
 | 序列器：行走步骤 | `request_set_walk_vel_sync {x,y,yaw}` | 成功通常无 response；没收到失败则记为 `sent`，再按步骤 delay 推进 | 行走速度类 SDK 成功无返回，不能把它当成“机器人已完成动作”。 |
+
+同步动作请求超时、连接中断或状态仍为 `running` 时，软件将执行结果标记为未知并保持动作入口锁定。此时只调用 `request_get_action_library_status` 轮询，不发送模式切换；确认 `action_library_state == "idle"` 后，若仍在动作库才执行退出动作库和进入 Walk，最终确认 `remote_control + idle` 后解锁。
 
 ## joystick 映射从哪里来
 

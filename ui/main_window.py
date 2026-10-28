@@ -18,6 +18,7 @@ from services import credential_store
 from services.robot_monitor import RobotMonitor
 from network.ssh_client import current_robot_id
 from workers.mcp_worker import McpWorker
+from workers.robot_identity_worker import RobotIdentityWorker
 from workers.ssh_key_install_worker import SshKeyInstallWorker
 from workers.ssh_worker import SshWorker
 from models.robot_profile import RobotIdentity, RobotIdentityStatus, RobotProfile
@@ -72,13 +73,16 @@ class MainWindow(QMainWindow):
         self._stack_effect: QGraphicsOpacityEffect | None = None
         self._stack_fade_animation: QPropertyAnimation | None = None
         self._robot_identity_timer: QTimer | None = None
+        self._robot_identity_worker: RobotIdentityWorker | None = None
         self._connection_timer: QTimer | None = None
         self._ssh_key_worker: SshKeyInstallWorker | None = None
         self._ssh_probe_worker: SshWorker | None = None
         self._last_status_log_key: tuple[str, str] | None = None
         self._last_status_log_at = 0.0
         self._last_identity_status_key: tuple[str, str] | None = None
+        self._last_monitored_status_key: tuple[str, str, str] | None = None
         self._identity_no_target_count = 0
+        self._pending_wifi_change_attempt: int | None = None
         self._active_workspace_key = "connection"
         self._active_workspace = CONNECTION_WORKSPACE
         self._was_minimized = False
@@ -263,13 +267,16 @@ class MainWindow(QMainWindow):
         self._robot_identity_timer.timeout.connect(self._poll_robot_identity)
         self._robot_identity_timer.start()
 
+        self._robot_identity_worker = RobotIdentityWorker(parent=self)
+        self._robot_identity_worker.completed.connect(self._on_robot_identity_polled)
+        self._robot_identity_worker.failed.connect(self._on_robot_identity_poll_failed)
+
         self._connection_timer = QTimer(self)
         self._connection_timer.setInterval(5000)
         self._connection_timer.timeout.connect(self._refresh_connection_status)
         self._connection_timer.start()
 
     def _refresh_connection_status(self):
-        self._connection_service.check_wifi()
         if ROBOT_CONFIG.mcp_supported and ROBOT_CONFIG.mcp_url:
             self._connection_service.check_mcp(ROBOT_CONFIG.mcp_url)
         else:
@@ -281,6 +288,7 @@ class MainWindow(QMainWindow):
         message: str = "",
         initial: bool = False,
     ):
+        self._update_wifi_status(identity)
         self._identity_no_target_count = 0
         previous_accid = ROBOT_CONFIG.ws_accid
         ready = ROBOT_CONFIG.apply_identity(identity)
@@ -530,6 +538,19 @@ class MainWindow(QMainWindow):
             )
         ):
             return
+        monitored_status_key = (
+            str(info.get("robot_status", "")),
+            str(info.get("ability", "")),
+            str(info.get("mode", "")),
+        )
+        if monitored_status_key != self._last_monitored_status_key:
+            self._last_monitored_status_key = monitored_status_key
+            self._log_ui_event(
+                "robot_status_update",
+                robot_status=monitored_status_key[0],
+                ability=monitored_status_key[1],
+                mode=monitored_status_key[2],
+            )
         self.status_banner.update_status(info)
         self.control_panel.update_robot_status(info)
         self._dance_service.update_robot_status(info)
@@ -862,8 +883,6 @@ class MainWindow(QMainWindow):
         dialog.network_selected.connect(
             lambda ssid: self.terminal.append_log(f"[WiFi] 已选择连接: {ssid}", "pass"))
         if dialog.exec() == WifiSelectorDialog.DialogCode.Accepted:
-            self.sidebar.refresh_wifi_status()
-            self._connection_service.check_wifi()
             self.terminal.append_log("[WiFi] 正在等待新机器人网络就绪...", "info")
             self._refresh_robot_after_wifi_change(0)
 
@@ -871,12 +890,10 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1200 if attempt == 0 else 2000, lambda: self._apply_robot_after_wifi_change(attempt))
 
     def _apply_robot_after_wifi_change(self, attempt: int):
-        from config import detect_robot_identity
+        self._pending_wifi_change_attempt = attempt
+        self._poll_robot_identity()
 
-        self.sidebar.refresh_wifi_status()
-        self._connection_service.check_wifi()
-
-        identity = detect_robot_identity(timeout=2.0)
+    def _on_wifi_change_identity_polled(self, identity: RobotIdentity, attempt: int):
         if not identity.ready:
             if identity.status != RobotIdentityStatus.NO_TARGET:
                 self.apply_robot_identity(identity)
@@ -890,9 +907,16 @@ class MainWindow(QMainWindow):
         self.apply_robot_identity(identity, "已切换控制目标")
 
     def _poll_robot_identity(self):
-        from config import detect_robot_identity
+        if self._robot_identity_worker and not self._robot_identity_worker.isRunning():
+            self._robot_identity_worker.start()
 
-        identity = detect_robot_identity(timeout=0.35)
+    def _on_robot_identity_polled(self, identity: RobotIdentity):
+        self._update_wifi_status(identity)
+        if self._pending_wifi_change_attempt is not None:
+            attempt = self._pending_wifi_change_attempt
+            self._pending_wifi_change_attempt = None
+            self._on_wifi_change_identity_polled(identity, attempt)
+            return
         if (
             identity.status == RobotIdentityStatus.NO_TARGET
             and self._active_workspace_key != CONNECTION_WORKSPACE.key
@@ -920,6 +944,26 @@ class MainWindow(QMainWindow):
                 identity,
                 "检测到机器人网络变化，已切换控制目标" if identity.ready else "",
             )
+
+    def _on_robot_identity_poll_failed(self, message: str):
+        self._pending_wifi_change_attempt = None
+        self._log_ui_event("identity_poll_failed", message=message)
+
+    def _update_wifi_status(self, identity: RobotIdentity):
+        connected = bool(identity.ssid_accids)
+        if self._connection_service:
+            self._connection_service.update_wifi(connected)
+        self.sidebar.update_wifi_status(
+            identity.ssid_accids[0] if connected else None,
+            connected,
+        )
+
+    def stop_identity_polling(self):
+        if self._robot_identity_timer:
+            self._robot_identity_timer.stop()
+        if self._robot_identity_worker and self._robot_identity_worker.isRunning():
+            self._robot_identity_worker.requestInterruption()
+            self._robot_identity_worker.wait()
 
     def _lock_transient_identity_loss(self, identity: RobotIdentity):
         ROBOT_CONFIG.clear_identity()

@@ -115,7 +115,7 @@ def test_clearing_profile_locks_all_control_commands(qtbot):
     )
 
 
-def test_l04_dance_library_allows_single_actions_only_in_walk(qtbot, monkeypatch):
+def test_l04_dance_library_allows_actions_only_in_walk(qtbot, monkeypatch):
     worker = _worker(L04_PROFILE)
     service = DanceService(worker)
     monkeypatch.setattr(service, "get_count", lambda _name: 0)
@@ -138,7 +138,150 @@ def test_l04_dance_library_allows_single_actions_only_in_walk(qtbot, monkeypatch
 
     assert panel._dance_cards["wakawaka"].isEnabled()
     assert panel._motion_cards["wave"].isEnabled()
+    assert panel._motion_cards["wave"].repeat_btn.isEnabled()
+    assert panel._motion_cards["wave"].repeat_btn.text() == "×5"
     assert not panel.tabs.isTabEnabled(3)
+
+    panel.repeat_count_spin.setValue(8)
+
+    assert panel._motion_cards["wave"].repeat_btn.text() == "×8"
+
+
+def test_l04_repeat_action_confirms_and_binds_selected_count(qtbot, monkeypatch):
+    worker = _worker(L04_PROFILE)
+    service = DanceService(worker)
+    monkeypatch.setattr(service, "get_count", lambda _name: 0)
+    panel = DanceLibraryPanel(service)
+    qtbot.addWidget(panel)
+    panel.apply_profile(L04_PROFILE)
+    panel._populate_motions([{"motion_name_en": "wave", "motion_name_cn": "挥手"}])
+    panel.update_robot_status({"robot_status": "Walk"})
+    confirmations = []
+    authorizations = []
+    executions = []
+    monkeypatch.setattr(
+        panel,
+        "_confirm_luna_action",
+        lambda action_type, name, **_kwargs: (
+            confirmations.append((action_type, name)) or True
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "authorize_next_action",
+        lambda action_type, name, repeat_count=1: (
+            authorizations.append((action_type, name, repeat_count)) or True
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "execute_motion_repeat",
+        lambda name, times, delay_ms, completion_timeout=None: executions.append(
+            (name, times, delay_ms, completion_timeout)
+        ),
+    )
+    panel.repeat_count_spin.setValue(8)
+
+    panel._motion_cards["wave"].repeat_btn.click()
+
+    assert confirmations == [("连续原子动作（8 次）", "wave")]
+    assert authorizations == [("motion", "wave", 8)]
+    assert executions == [("wave", 8, 2000, None)]
+
+
+def test_l04_salute_uses_same_sync_repeat_controls_as_other_motions(qtbot, monkeypatch):
+    worker = _worker(L04_PROFILE)
+    service = DanceService(worker)
+    monkeypatch.setattr(service, "get_count", lambda _name: 0)
+    panel = DanceLibraryPanel(service)
+    qtbot.addWidget(panel)
+    panel.apply_profile(L04_PROFILE)
+    panel._populate_motions([{
+        "motion_name_en": "Salute",
+        "motion_name_cn": "敬礼",
+        "duration": 6,
+    }])
+    panel.update_robot_status({"robot_status": "Walk"})
+    card = panel._motion_cards["Salute"]
+    assert card.execute_btn.isEnabled()
+    assert card.repeat_btn.isEnabled()
+    assert card.repeat_btn.text() == "×5"
+
+
+def test_motion_duration_sets_sync_timeout_for_single_and_repeat(qtbot, monkeypatch):
+    worker = _worker(L04_PROFILE)
+    service = DanceService(worker)
+    monkeypatch.setattr(service, "get_count", lambda _name: 0)
+    panel = DanceLibraryPanel(service)
+    qtbot.addWidget(panel)
+    panel.apply_profile(L04_PROFILE)
+    panel._populate_motions([{
+        "motion_name_en": "Long motion",
+        "motion_name_cn": "长动作",
+        "duration": 20,
+    }])
+    panel.update_robot_status({"robot_status": "Walk"})
+    monkeypatch.setattr(panel, "_confirm_luna_action", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(service, "authorize_next_action", lambda *_args, **_kwargs: True)
+    single_calls = []
+    repeat_calls = []
+    monkeypatch.setattr(
+        service,
+        "execute_motion",
+        lambda name, completion_timeout=None: single_calls.append(
+            (name, completion_timeout)
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "execute_motion_repeat",
+        lambda name, times, delay_ms, completion_timeout=None: repeat_calls.append(
+            (name, times, delay_ms, completion_timeout)
+        ),
+    )
+    card = panel._motion_cards["Long motion"]
+
+    card.execute_btn.click()
+    card.repeat_btn.click()
+
+    assert single_calls == [("Long motion", 50.0)]
+    assert repeat_calls == [("Long motion", 5, 2000, 50.0)]
+
+
+def test_l04_menu_enables_sync_motions_but_not_dances(qtbot, monkeypatch):
+    worker = _worker(L04_PROFILE)
+    service = DanceService(worker)
+    monkeypatch.setattr(service, "get_count", lambda _name: 0)
+    panel = DanceLibraryPanel(service)
+    qtbot.addWidget(panel)
+    panel.apply_profile(L04_PROFILE)
+    panel._populate_dances([{"rc_mapping": "wakawaka", "name": "哇卡哇卡"}])
+    panel._populate_motions([{"motion_name_en": "Salute", "motion_name_cn": "敬礼"}])
+
+    panel.update_robot_status({"robot_status": "Menu"})
+
+    assert not panel._dance_cards["wakawaka"].isEnabled()
+    assert panel._motion_cards["Salute"].isEnabled()
+    assert "同步接口结束后将确认返回 Walk" in panel.action_status_label.text()
+
+
+def test_l04_status_refresh_does_not_reenable_actions_while_running(qtbot, monkeypatch):
+    worker = _worker(L04_PROFILE)
+    service = DanceService(worker)
+    monkeypatch.setattr(service, "get_count", lambda _name: 0)
+    panel = DanceLibraryPanel(service)
+    qtbot.addWidget(panel)
+    panel.apply_profile(L04_PROFILE)
+    panel._populate_motions([{"motion_name_en": "wave", "motion_name_cn": "挥手"}])
+    panel.update_robot_status({"robot_status": "Walk"})
+
+    panel._on_action_state_changed(True, "连续动作执行中: wave (1/5)")
+    panel.update_robot_status({"robot_status": "Walk"})
+    panel.apply_profile(L04_PROFILE)
+
+    assert not panel._motion_cards["wave"].isEnabled()
+    assert not panel.repeat_count_spin.isEnabled()
+    assert panel.action_status_label.text() == "连续动作执行中: wave (1/5)"
 
 
 def test_l04_action_confirmation_blocks_non_walk_and_can_approve_walk(

@@ -95,6 +95,7 @@ class Application(QObject):
 
     def shutdown(self):
         self.main_window.acceptance_panel.cancel_active_session("应用退出")
+        self.main_window.stop_identity_polling()
         self.test_case_service.shutdown()
         self.mcp_worker.stop()
         self.robot_monitor.stop()

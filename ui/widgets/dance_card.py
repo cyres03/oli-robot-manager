@@ -55,29 +55,34 @@ class DanceCard(QFrame):
         layout.addStretch()
 
         # Execute button — use direct property setting, no QSS selectors
-        exec_btn = ExecuteButton("执行")
-        exec_btn.clicked.connect(self.execute_clicked.emit)
-        exec_btn.setEnabled(executable)
+        self.execute_btn = ExecuteButton("执行")
+        self.execute_btn.clicked.connect(self.execute_clicked.emit)
+        self.execute_btn.setEnabled(executable)
         if unavailable_reason:
-            exec_btn.setToolTip(unavailable_reason)
+            self.execute_btn.setToolTip(unavailable_reason)
         if repeat_enabled:
             button_row = QHBoxLayout()
             button_row.setSpacing(6)
-            repeat_btn = ExecuteButton("5次")
-            repeat_btn.setToolTip("连续执行 5 次：每次成功后等待 2 秒再继续")
-            repeat_btn.clicked.connect(self.repeat_clicked.emit)
-            repeat_btn.setEnabled(executable)
+            self.repeat_btn = ExecuteButton("×5")
+            self.repeat_btn.setToolTip("按设定次数连续执行，每次成功后等待 2 秒再继续")
+            self.repeat_btn.clicked.connect(self.repeat_clicked.emit)
+            self.repeat_btn.setEnabled(executable)
             if unavailable_reason:
-                repeat_btn.setToolTip(unavailable_reason)
-            button_row.addWidget(exec_btn)
-            button_row.addWidget(repeat_btn)
+                self.repeat_btn.setToolTip(unavailable_reason)
+            button_row.addWidget(self.execute_btn)
+            button_row.addWidget(self.repeat_btn)
             layout.addLayout(button_row)
         else:
-            layout.addWidget(exec_btn)
+            self.repeat_btn = None
+            layout.addWidget(self.execute_btn)
 
     def set_count(self, count: int):
         self._count = count
         self.count_badge.setText(str(count))
+
+    def set_repeat_count(self, count: int):
+        if self.repeat_btn:
+            self.repeat_btn.setText(f"×{count}")
 
     @property
     def dance_name(self) -> str:

@@ -10,7 +10,7 @@
       "timeout_seconds": 15,
       "cleanup": true,
       "requires_pty": true,
-      "firmware_pattern": "^robot-luna-r-1\\.2\\.",
+      "firmware_pattern": "^robot-luna-r-1\\.(?:2|3)\\.",
       "script_path": "scripts/mros_node_health.sh",
       "interpreter": "sh",
       "arguments": ["."],
